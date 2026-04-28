@@ -2,3 +2,5 @@ pyrealsense2==2.55.1.6486
 numpy==1.24.3
 open3d==0.17.0
 opencv-python==4.7.0.72
+matplotlib==3.7.1
+matplotlib-inline==0.1.6
