@@ -5,21 +5,95 @@ import open3d as o3d
 import os
 import math
 import sys
-from realsensepy.src.realsense_depth import DepthCamera
-from realsensepy.src.utils import createPointCloudO3D
+import argparse
+from realsense_depth import DepthCamera
+from utils import createPointCloudO3D
 
 # --- Configuration ---
-resolution_width, resolution_height = (640, 480)
-SAVE_DIR = "test11_production"
-if not os.path.exists(SAVE_DIR):
-    os.makedirs(SAVE_DIR)
+resolution_width, resolution_height = (848, 480)
 
-# กำหนดชื่อฐานของไฟล์ (Base names)
-# โค้ดจะไปตามหาไฟล์ target_A_template.png และ target_A_offset.txt ในโฟลเดอร์โดยอัตโนมัติ
-TARGET_BASENAMES = ["target_A", "target_B"]
-TEMPLATE_DIR = "test8_template_match" # โฟลเดอร์ที่คุณเซฟ Template ไว้
+def get_config():
+    """รับค่า configuration จาก command-line arguments หรือ user input"""
+    parser = argparse.ArgumentParser(
+        description='Real Sense 3D Multi-Target Detection',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  python main.py --template-dir realsensepy/test1 --targets target_A target_B --save-dir my_output
+  python main.py -td realsensepy/test1 -t target_A target_B -sd my_output
+  python main.py  (จะถามผู้ใช้ input)
+        '''
+    )
+    
+    parser.add_argument(
+        '-td', '--template-dir',
+        type=str,
+        default=None,
+        help='โฟลเดอร์ที่เก็บ Template และ Offset (default: realsensepy/test1)'
+    )
+    parser.add_argument(
+        '-t', '--targets',
+        type=str,
+        nargs='+',
+        default=None,
+        help='ชื่อเป้าหมาย เช่น target_A target_B (default: target_A target_B)'
+    )
+    parser.add_argument(
+        '-sd', '--save-dir',
+        type=str,
+        default=None,
+        help='โฟลเดอร์สำหรับบันทึกผลลัพธ์ (default: test1/test1_template_match)'
+    )
+    
+    args = parser.parse_args()
+    
+    # ถ้าไม่มี argument ให้ถามผู้ใช้
+    template_dir = args.template_dir
+    if template_dir is None:
+        template_dir = input("กรุณาป้อนโฟลเดอร์ที่เก็บ Template [realsensepy/test1]: ").strip()
+        if not template_dir:
+            template_dir = "realsensepy/test1"
+    
+    target_basenames = args.targets
+    if target_basenames is None:
+        targets_input = input("กรุณาป้อนชื่อเป้าหมาย คั่นด้วยช่องว่าง [target_A target_B]: ").strip()
+        if targets_input:
+            target_basenames = targets_input.split()
+        else:
+            target_basenames = ["target_A", "target_B", "target_C"]
+    
+    # ทำความสะอาด target names
+    cleaned_targets = []
+    for target in target_basenames:
+        target = target.replace('_template.png', '').replace('_offset.txt', '').replace('.png', '').strip()
+        if target:
+            cleaned_targets.append(target)
+    target_basenames = cleaned_targets
+    
+    if not target_basenames:
+        print("[ERROR] No valid target names provided.")
+        sys.exit(1)
+    
+    save_dir = args.save_dir
+    if save_dir is None:
+        save_dir = input("กรุณาป้อนโฟลเดอร์สำหรับบันทึกผลลัพธ์ [test1/test1_template_match]: ").strip()
+        if not save_dir:
+            save_dir = "test1/test1_template_match"
+    
+    # สร้าง folder ถ้ายังไม่มี
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+        print(f"✓ สร้าง folder '{save_dir}' เรียบร้อย")
+    
+    print(f"\n--- ตั้งค่า Configuration ---")
+    print(f"Template Directory: {template_dir}")
+    print(f"Target Names: {', '.join(target_basenames)}")
+    print(f"Save Directory: {save_dir}\n")
+    
+    return template_dir, target_basenames, save_dir
 
-COLORS = [(0, 255, 0), (255, 0, 0)] 
+TEMPLATE_DIR, TARGET_BASENAMES, SAVE_DIR = get_config()
+COLORS = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255)] # เพิ่มสีเผื่อมีหลายเป้าหมาย
 
 def rotation_matrix_to_euler_angles(R):
     sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
@@ -39,29 +113,31 @@ def main():
     offsets = []
     
     # 1. โหลดรูป Template และไฟล์ Offset อัตโนมัติ
+    print(f"\n[LOADING] Looking for templates in: {os.path.abspath(TEMPLATE_DIR)}")
     for base in TARGET_BASENAMES:
         img_path = os.path.join(TEMPLATE_DIR, f"{base}_template.png")
         txt_path = os.path.join(TEMPLATE_DIR, f"{base}_offset.txt")
         
         if not os.path.exists(img_path) or not os.path.exists(txt_path):
-            print(f"[ERROR] Missing files for target: {base}")
-            print(f"Make sure {img_path} and {txt_path} exist.")
+            print(f"    [ERROR] Template or Offset file NOT found for {base}")
             sys.exit(1)
             
-        # โหลดรูป
         tpl = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         templates.append(tpl)
         
-        # โหลดพิกัด X, Y
         with open(txt_path, 'r') as f:
             data = f.read().strip().split(',')
-            offset_x, offset_y = int(data[0]), int(data[1])
-            offsets.append((offset_x, offset_y))
+            offsets.append((int(data[0]), int(data[1])))
             
-    print(f"[SUCCESS] Loaded {len(templates)} templates with custom target points.")
+    print(f"\n[SUCCESS] Loaded {len(templates)} templates with custom target points.\n")
 
     # 2. เปิดกล้อง
+    print("[INIT] Initializing RealSense Camera...")
     Realsensed435Cam = DepthCamera(resolution_width, resolution_height)
+    
+    cv2.namedWindow("Frame", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Frame", 848, 480)
+    
     print("\n--- MULTI-TARGET AUTO DETECTION ---")
     print("Press 'q' when targets are locked to extract 6-DOF.")
 
@@ -85,42 +161,134 @@ def main():
                 top_left = max_loc
                 bottom_right = (top_left[0] + tw, top_left[1] + th)
                 
-                # --- ใช้ Offset ที่โหลดมาจากไฟล์ เพื่อวางจุดสีแดงให้แม่นยำ ---
                 target_offset = offsets[idx]
                 target_center = (top_left[0] + target_offset[0], top_left[1] + target_offset[1])
-                
                 detected_pixels.append((idx, target_center)) 
                 
                 color = COLORS[idx % len(COLORS)]
                 cv2.rectangle(display_frame, top_left, bottom_right, color, 2)
                 cv2.circle(display_frame, target_center, 5, (0, 0, 255), -1)
                 
-                # แสดงชื่อ Target ให้ดูง่าย
                 target_name = TARGET_BASENAMES[idx]
                 cv2.putText(display_frame, f"{target_name}: {max_val*100:.1f}%", 
                             (top_left[0], top_left[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                
-                display_frame[10 + (idx * (th + 5)):10 + (idx * (th + 5)) + th, 630-tw:630] = cv2.cvtColor(template_patch, cv2.COLOR_GRAY2BGR)
 
-        cv2.putText(display_frame, f"Found {len(detected_pixels)}/{len(templates)} Targets. Press 'q' to Save.", 
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        
         cv2.imshow("Frame", display_frame)
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(33) & 0xFF
         
+        # --- 100 FRAME AVERAGING & FILTERING LOGIC ---
         if key == ord('q'):
             if len(detected_pixels) == 0:
                 print("\n[WARNING] No targets locked. Cannot extract.")
                 continue
                 
-            print(f"\n[PROCESSING] Extracting 3D Data for {len(detected_pixels)} targets...")
+            print(f"\n[PROCESSING] Capturing 100 frames for depth averaging...")
             
-            pcd = createPointCloudO3D(color_raw_frame, depth_raw_frame)
+            # เตรียม Array สำหรับเก็บผลรวม
+            depth_sum = np.zeros((resolution_height, resolution_width), dtype=np.float32)
+            color_sum = np.zeros((resolution_height, resolution_width, 3), dtype=np.float32)
+            valid_depth_count = np.zeros((resolution_height, resolution_width), dtype=np.float32)
+            
+            frames_captured = 0
+            last_depth_frame = None
+
+            while frames_captured < 100:
+                ret_cap, depth_cap, color_cap = Realsensed435Cam.get_raw_frame()
+                if not ret_cap: continue
+                
+                d_arr = np.asanyarray(depth_cap.get_data(), dtype=np.float32)
+                c_arr = np.asanyarray(color_cap.get_data(), dtype=np.float32)
+                
+                # นำมาบวกกันเฉพาะพิกเซลที่มีค่าความลึก (> 0) เพื่อไม่ให้ค่า 0 มาดึงค่าเฉลี่ยให้เพี้ยน
+                mask = d_arr > 0
+                depth_sum[mask] += d_arr[mask]
+                valid_depth_count[mask] += 1
+                color_sum += c_arr
+                
+                last_depth_frame = depth_cap
+                frames_captured += 1
+                
+                if frames_captured % 20 == 0:
+                    print(f"  -> Captured {frames_captured}/100 frames...")
+                cv2.waitKey(10)
+
+            print("[PROCESSING] Calculating average and generating Point Cloud...")
+            
+            print("[PROCESSING] Calculating average and generating Point Cloud...")
+            
+            # ป้องกันการหารด้วย 0
+            valid_depth_count[valid_depth_count == 0] = 1
+            
+            # หาค่าเฉลี่ย (เป็นหน่วยมิลลิเมตร)
+            avg_depth = depth_sum / valid_depth_count
+            
+            # --- [เพิ่มใหม่] Bilateral Filter แก้รอยเว้าบนระนาบเดียวกัน ---
+            # แปลงให้อยู่ในฟอร์แมต float32 ที่ OpenCV รองรับ
+            avg_depth = np.float32(avg_depth)
+            
+            # รีดพื้นผิวให้เรียบเนียน (d=ขนาดพื้นที่เกลี่ย, sigmaColor=ความต่างระยะ Z ที่ยอมให้เกลี่ยเข้าหากัน)
+            # ตั้งค่า sigmaColor=15 แปลว่าถ้าระยะเว้าแหว่งไม่เกิน 15 มิลลิเมตร โค้ดจะถมให้เรียบเสมอกัน
+            avg_depth = cv2.bilateralFilter(avg_depth, d=9, sigmaColor=15.0, sigmaSpace=15.0)
+            
+            avg_color = color_sum / 100.0
+            
+            # --- Depth Gradient Filter ตัดขอบพังผืด (ของเดิม) ---
+            grad_x = cv2.Sobel(avg_depth, cv2.CV_32F, 1, 0, ksize=3)
+            grad_y = cv2.Sobel(avg_depth, cv2.CV_32F, 0, 1, ksize=3)
+            grad_mag = cv2.magnitude(grad_x, grad_y)
+            
+            GRADIENT_THRESHOLD_MM = 15.0 
+            flat_surface_mask = grad_mag < GRADIENT_THRESHOLD_MM
+            
+            # ดึงค่า intrinsics ของกล้อง
+            intrinsics = last_depth_frame.profile.as_video_stream_profile().intrinsics
+            
+            # ดึงค่า Depth Scale จริงจากตัว Hardware กล้อง
+            depth_scale = last_depth_frame.get_units()
+            
+            # --- แปลงค่าเฉลี่ย 2D กลับเป็น 3D Point Cloud ---
+            u, v = np.meshgrid(np.arange(resolution_width), np.arange(resolution_height))
+            u = u.flatten()
+            v = v.flatten()
+            z = avg_depth.flatten() * depth_scale  # แปลงเป็นหน่วยเมตรอย่างแม่นยำ
+            
+            # ตัดข้อมูลที่ไกลเกิน 0.5m + เอาเฉพาะจุดที่ความชันผ่านเกณฑ์ (flat_surface_mask)
+            max_depth_meters = 0.50 
+            valid = (z > 0) & (z < max_depth_meters) & flat_surface_mask.flatten()
+            
+            u_valid = u[valid]
+            v_valid = v[valid]
+            z_valid = z[valid]
+            
+            # สมการ Pinhole Camera Model
+            x = (u_valid - intrinsics.ppx) * z_valid / intrinsics.fx
+            y = (v_valid - intrinsics.ppy) * z_valid / intrinsics.fy
+            
+            # สร้าง Array ข้อมูล 3D (พลิกแกน Y และ Z ให้ตรงกับมาตรฐานการแสดงผลของ Open3D)
+            points = np.vstack((x, -y, -z_valid)).T
+            
+            # จัดการสี (OpenCV เป็น BGR, ต้องสลับเป็น RGB ให้ Open3D)
+            colors_valid = avg_color.reshape(-1, 3)[valid]
+            colors_rgb = colors_valid[:, ::-1] / 255.0  
+            
+            # สร้าง Point Cloud
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points)
+            pcd.colors = o3d.utility.Vector3dVector(colors_rgb)
+            
+            print("[PROCESSING] Cleaning Point Cloud Outliers...")
+            # 1. ลบ Flying Pixels (พังผืดที่ขอบ) ด้วย Radius Outlier Removal
+            pcd, ind = pcd.remove_radius_outlier(nb_points=25, radius=0.015) 
+            
+            # 2. ลบ Noise ผิวชิ้นงานด้วย Statistical Outlier Removal
+            pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+            
             pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.01, max_nn=30))
-            intrinsics = depth_raw_frame.profile.as_video_stream_profile().intrinsics
-            obj_points = np.asarray(pcd.points)
             
+            obj_points = np.asarray(pcd.points)
             all_markers = []
+            
+            print(f"\n[PROCESSING] Extracting 3D Data for {len(detected_pixels)} targets...")
             
             for target_id, target_pixel in detected_pixels:
                 u, v = target_pixel
@@ -153,7 +321,6 @@ def main():
                 print(f"Position (X, Y, Z): {exact_target_pos}")
                 print(f"Orientation (R, P, Y): {roll:.2f}, {pitch:.2f}, {yaw:.2f}")
 
-                # เซฟไฟล์โดยใช้ชื่อ Base Name เพื่อให้ชัดเจน
                 txt_path = os.path.join(SAVE_DIR, f"{target_name}_data.txt")
                 with open(txt_path, "w") as f:
                     f.write(f"Position_X: {exact_target_pos[0]:.6f}\n")
@@ -186,7 +353,7 @@ def main():
             for i, marker in enumerate(all_markers):
                 geometries.append({"name": f"marker_{i}", "geometry": marker, "material": mat_unlit})
                 
-            o3d.visualization.draw(geometries, title="Multi-Target Production Mode")
+            o3d.visualization.draw(geometries, title="Multi-Target Production Mode (100 Frames Averaged & Filtered)")
             break 
 
     Realsensed435Cam.release()
