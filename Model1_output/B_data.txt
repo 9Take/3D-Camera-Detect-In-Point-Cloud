@@ -1,0 +1,9 @@
+Target: B
+Template_Version: B.4
+Confidence: 80.9%
+Position_X: 0.017655
+Position_Y: -0.049636
+Position_Z: -0.541436
+Roll: -171.56
+Pitch: -33.61
+Yaw: -4.69

@@ -1,0 +1,6 @@
+Position_X: 0.009987
+Position_Y: -0.063567
+Position_Z: -0.420000
+Roll: 167.49
+Pitch: 31.68
+Yaw: -6.64

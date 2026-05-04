@@ -1,0 +1,9 @@
+Target: A
+Template_Version: A.5
+Confidence: 92.5%
+Position_X: 0.100518
+Position_Y: 0.164326
+Position_Z: -0.470494
+Roll: 140.12
+Pitch: 8.57
+Yaw: -7.10
