@@ -11,7 +11,8 @@ from utils import createPointCloudO3D
 from collections import defaultdict
 
 # --- Configuration ---
-resolution_width, resolution_height = (1280, 720)  # Balanced: Better quality without excessive slowdown
+#resolution_width, resolution_height = (1280, 720)  # Balanced: Better quality without excessive slowdown
+resolution_width, resolution_height = (848, 480)  # Faster processing with slightly lower resolution
 
 def get_config():
     """รับค่า configuration จาก command-line arguments หรือ user input"""
