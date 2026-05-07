@@ -7,9 +7,9 @@ plc:
   port: 5010
   start_d_reg: 1001
 paths:
-  template_dir: "/home/progren/Intership Project/HeatExchangerPointCloudDetection/3D-Camera-Detect-In-Point-Cloud2/templates"
-  save_dir: "output"
-  position_mem: "data/position_mem.json"
+  template_dir: "data/templates"     # เก็บรูป Template และ Offset
+  save_dir: "data/logs"              # เก็บไฟล์ 3D Point Cloud ตอนทดสอบ
+  position_mem: "data/logs/position_mem.json"
 app:
   timer_lock_seconds: 0.5
   frames_for_averaging: 70
