@@ -1,15 +1,20 @@
 camera:
   resolution_width: 848
   resolution_height: 480
-  fps: 30
 plc:
   ip: "192.168.1.165"
   port: 5010
-  start_d_reg: 1001
+  # กำหนด Device สำหรับ Trigger และพิกัด
+  trigger_device: "M100"       # PLC ส่งค่ามาเพื่อบอกให้ Vision บันทึกค่า
+  status_device: "M101"        # Vision ส่งค่ากลับไปบอกว่าส่งข้อมูลเสร็จแล้ว
+  devices:
+    x: "D1001"
+    y: "D1002"
+    z: "D1003"
+    roll: "D1004"
+    pitch: "D1005"
+    yaw: "D1006"
 paths:
-  template_dir: "data/templates"     # เก็บรูป Template และ Offset
-  save_dir: "data/logs"              # เก็บไฟล์ 3D Point Cloud ตอนทดสอบ
+  template_dir: "data/templates"
+  save_dir: "data/logs"
   position_mem: "data/logs/position_mem.json"
-app:
-  timer_lock_seconds: 0.5
-  frames_for_averaging: 70
