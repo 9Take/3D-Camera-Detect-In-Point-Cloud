@@ -46,12 +46,12 @@ class ObjectDetector:
                     templates[target_name] = {'img': template_img, 'offset': offset, 'kp': kp, 'des': des}
                     print(f"[CORE] Loaded Template '{target_name}' (Features: {len(kp)})")
         return templates
-
     def detect(self, color_frame, res_width, res_height):
         gray_frame = cv2.cvtColor(color_frame, cv2.COLOR_BGR2GRAY)
         display_frame = color_frame.copy()
         detected_pixels = []
         detected_names = []
+        detected_confidences = [] # เพิ่ม List เก็บค่าความมั่นใจ
         
         kp_frame, des_frame = self.sift.detectAndCompute(gray_frame, None)
         
@@ -71,6 +71,11 @@ class ObjectDetector:
                         M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
                         
                         if M is not None:
+                            # --- คำนวณ Confidence Score ---
+                            inliers = np.sum(mask) 
+                            # สมมติฐาน: ถ้าจุดตรงกัน (Inliers) มากกว่า 30 จุด ถือว่ามั่นใจ 100%
+                            confidence = min(100.0, (inliers / 30.0) * 100.0)
+                            
                             th, tw = t_data['img'].shape
                             pts = np.float32([[0, 0], [0, th - 1], [tw - 1, th - 1], [tw - 1, 0]]).reshape(-1, 1, 2)
                             dst = cv2.perspectiveTransform(pts, M)
@@ -81,13 +86,14 @@ class ObjectDetector:
                             if 0 <= target_pixel[0] < res_width and 0 <= target_pixel[1] < res_height:
                                 detected_pixels.append(target_pixel)
                                 detected_names.append(target_name)
+                                detected_confidences.append(confidence) # เก็บค่า
                                 
-                                # วาดกรอบและจุด (เหมือน temp2.py)
                                 cv2.polylines(display_frame, [np.int32(dst)], True, (0, 255, 0), 3, cv2.LINE_AA)
                                 cv2.circle(display_frame, target_pixel, 5, (0, 0, 255), -1)
-                                cv2.putText(display_frame, f"Locked: {target_name}", 
+                                # แสดงเปอเซ็นต์บนหน้าจอ
+                                cv2.putText(display_frame, f"Locked: {target_name} ({confidence:.1f}%)", 
                                             (int(dst[0][0][0]), int(dst[0][0][1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 except Exception as e:
                     continue
 
-        return detected_pixels, detected_names, display_frame
+        return detected_pixels, detected_names, detected_confidences, display_frame

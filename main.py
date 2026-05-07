@@ -3,9 +3,10 @@ import time
 import yaml
 import json
 import os
-import numpy as np
 import argparse
+import numpy as np
 
+# อิมพอร์ตโมดูลต่างๆ (ปรับชื่อโฟลเดอร์ให้ตรงกับโครงสร้างของคุณ)
 from communication.realsense import DepthCamera
 from communication.plc_comm import PLCCommunicator
 from core.detector import ObjectDetector
@@ -15,108 +16,115 @@ def load_config():
     with open("config.yaml", "r") as f:
         return yaml.safe_load(f)
 
-def float_to_scaled(value, scale=1000):
-    """แปลง float เป็น int สำหรับ PLC (scaled by 1000)"""
-    return int(value * scale)
-
 def main():
     parser = argparse.ArgumentParser(description="Heat Exchanger Vision System")
-    parser.add_argument('--debug', action='store_true', help='เปิดหน้าต่าง Debug เพื่อดูภาพจากกล้องและการตรวจจับ')
+    parser.add_argument('--debug', action='store_true', help='เปิดหน้าต่างเพื่อดูการตรวจจับ 2D และ 3D Point Cloud')
     args = parser.parse_args()
 
     config = load_config()
-    
-    os.makedirs(os.path.dirname(config['paths']['position_mem']), exist_ok=True)
     os.makedirs(config['paths']['save_dir'], exist_ok=True)
 
-    print("[INIT] Initializing Camera and Modules...")
+    print("\n[INIT] Initializing Systems...")
     cam = DepthCamera(config['camera']['resolution_width'], config['camera']['resolution_height'])
     detector = ObjectDetector(config['paths']['template_dir'])
     transformer = PointCloudTransformer(cam, config['camera']['resolution_width'], config['camera']['resolution_height'], config['paths']['save_dir'])
+    
+    # เชื่อมต่อ PLC
     plc = PLCCommunicator(config['plc']['ip'], config['plc']['port'])
+    plc.connect()
 
-    lock_start_time = None
-    trigger_extraction = False
-
-    print("[MAIN] Starting detection loop...")
+    print("\n[SYSTEM READY] Starting Vision Loop...")
+    
     try:
         while True:
-            # Capture frame from camera
             ret, depth_raw, color_raw = cam.get_raw_frame()
-            if not ret:
-                print("[WARNING] Failed to get frame")
-                continue
-            
+            if not ret: continue
+
             color_frame = np.asanyarray(color_raw.get_data())
-            h, w = color_frame.shape[:2]
-
-            # 1. Detect วัตถุแบบ Real-time
-            detected_pixels, names, display_frame = detector.detect(color_frame, w, h)
             
-            # อัปเดตพิกัดล่าสุดลง JSON (เพื่อการตรวจสอบหน้าจอ)
-            current_detect = {"last_seen": names, "timestamp": time.time()}
-            with open(config['paths']['save_dir'] + "/current_detect.json", "w") as f:
-                json.dump(current_detect, f)
+            # 1. ค้นหาวัตถุ (2D Detection) - เพิ่ม confidences
+            detected_pixels, detected_names, confidences, display_frame = detector.detect(
+                color_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
+            )
 
-            # 2. ตรวจสอบ Trigger จาก PLC (เช่น อ่านค่าจาก M100)
-            try:
-                trigger = plc.batchread_bitunits(config['plc']['trigger_device'], 1)
-            except Exception as e:
-                print(f"[WARNING] PLC read error: {e}")
-                trigger = [0]
+            # อัปเดตสถานะแบบ Real-time ลง JSON (สำหรับทำ Dashboard ดูผ่านเว็บได้)
+            realtime_status = {
+                "timestamp": time.time(),
+                "targets_in_view": detected_names,
+                "confidences": confidences
+            }
+            with open(os.path.join(config['paths']['save_dir'], "current_detect.json"), "w") as f:
+                json.dump(realtime_status, f)
+
+            if args.debug:
+                cv2.imshow("Vision System - Main Camera", display_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27 or key == ord('q'): break
+
+            # 2. ตรวจสอบสัญญาณ Trigger จาก PLC
+            # (ถ้า PLC ส่งค่า M100 มาเป็น 1 แปลว่าหุ่นยนต์หยุดนิ่งและพร้อมรับค่าแล้ว)
+            trigger_status = plc.read_bit(config['plc']['trigger_device'])
             
-            if trigger and trigger[0] == 1:  # เมื่อ PLC สั่ง Trigger
-                print("[PLC] Trigger Received!")
+            if trigger_status[0] == 1 and len(detected_pixels) > 0:
+                print("\n[TRIGGER] Received signal from PLC. Extracting 6-DOF...")
                 
-                # 3. คำนวณ 6-DOF ชุดปัจจุบัน
-                data_6dof = transformer.extract_3d_data(detected_pixels, names, show_3d=args.debug)
+                # 3. คำนวณพิกัด 3D แบบแม่นยำ ณ วินาทีนั้น
+                extracted_6dof = transformer.extract_3d_data(
+                    detected_pixels, 
+                    detected_names, 
+                    show_3d=args.debug
+                )
                 
-                if 'A' in data_6dof:
-                    # 4. บันทึกลง position_mem.json (Snapshot ตอนโดน Trigger)
-                    final_pos = data_6dof['A']
-                    save_payload = {
-                        "Position_X": float(final_pos[0]), 
-                        "Position_Y": float(final_pos[1]), 
-                        "Position_Z": float(final_pos[2]),
-                        "Roll": float(final_pos[3]), 
-                        "Pitch": float(final_pos[4]), 
-                        "Yaw": float(final_pos[5]),
-                        "timestamp": time.time()
+                # สมมติว่าต้องการส่งค่าของเป้าหมาย 'A' (ถ้าในอนาคตมีหลายเป้าหมาย สามารถวนลูปได้)
+                if 'A' in extracted_6dof:
+                    target_data = extracted_6dof['A'] # [X, Y, Z, Roll, Pitch, Yaw]
+                    
+                    # 4. บันทึก Memory State (Snapshot) ลง JSON
+                    memory_state = {
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "target": "A",
+                        "Position_X": round(target_data[0], 4),
+                        "Position_Y": round(target_data[1], 4),
+                        "Position_Z": round(target_data[2], 4),
+                        "Roll": round(target_data[3], 2),
+                        "Pitch": round(target_data[4], 2),
+                        "Yaw": round(target_data[5], 2)
                     }
                     with open(config['paths']['position_mem'], "w") as f:
-                        json.dump(save_payload, f, indent=4)
-                    
-                    # 5. ส่งข้อมูลไปยัง PLC Device ตามที่ตั้งค่าไว้ใน config
-                    try:
-                        dev = config['plc']['devices']
-                        plc.batchwrite_wordunits(dev['x'], float_to_scaled(final_pos[0]))
-                        plc.batchwrite_wordunits(dev['y'], float_to_scaled(final_pos[1]))
-                        plc.batchwrite_wordunits(dev['z'], float_to_scaled(final_pos[2]))
-                        plc.batchwrite_wordunits(dev['roll'], float_to_scaled(final_pos[3]))
-                        plc.batchwrite_wordunits(dev['pitch'], float_to_scaled(final_pos[4]))
-                        plc.batchwrite_wordunits(dev['yaw'], float_to_scaled(final_pos[5]))
-                        
-                        # ส่งสัญญาณตอบกลับ (Handshake Done)
-                        plc.batchwrite_bitunits(config['plc']['status_device'], [1])
-                        print("[PLC] Data sent successfully")
-                    except Exception as e:
-                        print(f"[ERROR] PLC write error: {e}")
+                        json.dump(memory_state, f, indent=4)
+                    print(f"[LOG] Memory saved to {config['paths']['position_mem']}")
 
-            # Display frame if debug mode
-            if args.debug and display_frame is not None:
-                cv2.imshow("Detection Debug", display_frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-    
+                    # 5. ส่งข้อมูลไปยัง PLC ตาม Data Register ที่ตั้งใน config
+                    dev = config['plc']['devices']
+                    # ส่ง Position (คูณ 1000 เพื่อแปลง เมตร เป็น มิลลิเมตร)
+                    plc.write_scaled_word(dev['x'], target_data[0], multiplier=1000)
+                    plc.write_scaled_word(dev['y'], target_data[1], multiplier=1000)
+                    plc.write_scaled_word(dev['z'], target_data[2], multiplier=1000)
+                    # ส่ง Orientation (คูณ 100 เพื่อเก็บทศนิยม 2 ตำแหน่งสำหรับองศา)
+                    plc.write_scaled_word(dev['roll'], target_data[3], multiplier=100)
+                    plc.write_scaled_word(dev['pitch'], target_data[4], multiplier=100)
+                    plc.write_scaled_word(dev['yaw'], target_data[5], multiplier=100)
+                    
+                    print(f"[PLC] 6-DOF Data sent successfully to D-Registers.")
+
+                    # 6. ส่งสัญญาณกลับ (Handshake Done) ไปที่ M101 ว่าคำนวณเสร็จแล้ว
+                    plc.write_bit(config['plc']['status_device'], 1)
+                    
+                    # หน่วงเวลาเล็กน้อยให้ PLC รับรู้ แล้วเคลียร์สัญญาณ Done
+                    time.sleep(0.5)
+                    plc.write_bit(config['plc']['status_device'], 0)
+                    
+                    print("[PLC] Handshake complete. Waiting for next trigger...")
+                    
+                    # เคลียร์ Trigger ตัวเองฝั่ง Python (หรือในความจริง PLC ต้องเป็นคนเคลียร์ M100 เอง)
+                    plc.write_bit(config['plc']['trigger_device'], 0) 
+
     except KeyboardInterrupt:
-        print("\n[MAIN] Interrupted by user")
-    except Exception as e:
-        print(f"[ERROR] Main loop error: {e}")
+        print("\n[INFO] Exiting program...")
     finally:
-        print("[CLEANUP] Releasing resources...")
+        plc.disconnect()
         cam.release()
         cv2.destroyAllWindows()
-        print("[DONE] Program finished")
 
 if __name__ == '__main__':
     main()
