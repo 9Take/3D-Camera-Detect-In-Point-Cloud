@@ -1,0 +1,15 @@
+camera:
+  resolution_width: 848
+  resolution_height: 480
+  fps: 30
+plc:
+  ip: "192.168.1.165"
+  port: 5010
+  start_d_reg: 1001
+paths:
+  template_dir: "/home/progren/Intership Project/HeatExchangerPointCloudDetection/3D-Camera-Detect-In-Point-Cloud2/templates"
+  save_dir: "output"
+  position_mem: "data/position_mem.json"
+app:
+  timer_lock_seconds: 0.5
+  frames_for_averaging: 70
