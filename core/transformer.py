@@ -4,6 +4,7 @@ import open3d as o3d
 import cv2
 import os
 
+# ในไฟล์ transformer.py
 def rotation_matrix_to_euler_angles(R):
     sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
     singular = sy < 1e-6
@@ -11,7 +12,9 @@ def rotation_matrix_to_euler_angles(R):
         x, y, z = math.atan2(R[2, 1], R[2, 2]), math.atan2(-R[2, 0], sy), math.atan2(R[1, 0], R[0, 0])
     else:
         x, y, z = math.atan2(-R[1, 2], R[1, 1]), math.atan2(-R[2, 0], sy), 0
-    return np.rad2deg([x, y, z])
+    
+    # แก้ไขตรงนี้: คืนค่าเป็น list ของ Radian ตรงๆ ไม่ต้อง np.rad2deg
+    return [x, y, z]
 
 class PointCloudTransformer:
     def __init__(self, camera, res_width, res_height, save_dir):
