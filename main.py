@@ -75,44 +75,47 @@ def main():
                     show_3d=args.debug
                 )
                 
-                # สมมติว่าต้องการส่งค่าของเป้าหมาย 'A' (ถ้าในอนาคตมีหลายเป้าหมาย สามารถวนลูปได้)
-                if 'A' in extracted_6dof:
-                    target_data = extracted_6dof['A'] # [X, Y, Z, Roll, Pitch, Yaw]
+                # วางโค้ดใหม่ส่วนนี้ต่อจาก extracted_6dof = transformer.extract_3d_data(...)
+                
+                if extracted_6dof:
+                    print(f"\n[INFO] Found {len(extracted_6dof)} targets.")
                     
-                    # 4. บันทึก Memory State (Snapshot) ลง JSON
-                    memory_state = {
-                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "target": "A",
-                        "Position_X": round(target_data[0], 4),
-                        "Position_Y": round(target_data[1], 4),
-                        "Position_Z": round(target_data[2], 4),
-                        "Roll": round(target_data[3], 2),
-                        "Pitch": round(target_data[4], 2),
-                        "Yaw": round(target_data[5], 2)
-                    }
-                    with open(config['paths']['position_mem'], "w") as f:
-                        json.dump(memory_state, f, indent=4)
-                    print(f"[LOG] Memory saved to {config['paths']['position_mem']}")
+                    # 4. ส่งจำนวนจุดที่พบไปที่ D1101 (จำกัดสูงสุดตาม max_points ใน config)
+                    num_targets = min(len(extracted_6dof), config['plc']['max_points'])
+                    plc.write_scaled_word(config['plc']['point_count_device'], num_targets, multiplier=1)
 
-                    # 5. ส่งข้อมูลไปยัง PLC ตาม Data Register ที่ตั้งใน config
-                    dev = config['plc']['devices']
-                    # ส่ง Position (คูณ 1000 เพื่อแปลง เมตร เป็น มิลลิเมตร)
-                    plc.write_scaled_word(dev['x'], target_data[0], multiplier=1000)
-                    plc.write_scaled_word(dev['y'], target_data[1], multiplier=1000)
-                    plc.write_scaled_word(dev['z'], target_data[2], multiplier=1000)
-                    # ส่ง Orientation (คูณ 100 เพื่อเก็บทศนิยม 2 ตำแหน่งสำหรับองศา)
-                    plc.write_scaled_word(dev['roll'], target_data[3], multiplier=100)
-                    plc.write_scaled_word(dev['pitch'], target_data[4], multiplier=100)
-                    plc.write_scaled_word(dev['yaw'], target_data[5], multiplier=100)
+                    # เตรียมตัวแปรหาเลขเริ่มต้น (ดึงเลข 1001 ออกมาจากตัวแปร "D1001")
+                    start_reg_num = int(config['plc']['data_start_device'][1:]) 
                     
-                    print(f"[PLC] 6-DOF Data sent successfully to D-Registers.")
+                    # 5. วนลูปส่งข้อมูลทีละชุด
+                    for i, (target_name, target_data) in enumerate(list(extracted_6dof.items())[:num_targets]):
+                        # [TODO 1] พิมพ์แสดงค่า X Y Z Roll Pitch Yaw ใน Terminal บรรทัดเดียว
+                        print(f"[{i+1}/{num_targets}] Target '{target_name}' ➔ X: {target_data[0]:.4f}m, Y: {target_data[1]:.4f}m, Z: {target_data[2]:.4f}m | Roll: {target_data[3]:.2f}°, Pitch: {target_data[4]:.2f}°, Yaw: {target_data[5]:.2f}°")
+                        
+                        # คำนวณ Register เริ่มต้นของชุดนี้ (เช่น i=0 เริ่ม D1001, i=1 เริ่ม D1007...)
+                        current_offset = start_reg_num + (i * config['plc']['registers_per_point'])
+                        
+                        # [TODO 2] ส่ง Position & Orientation เข้า PLC (คูณ 1000 เพื่อแปลงเป็นจำนวนเต็ม)
+                        plc.write_scaled_word(f"D{current_offset}",     target_data[0], multiplier=1000) # X
+                        plc.write_scaled_word(f"D{current_offset + 1}", target_data[1], multiplier=1000) # Y
+                        plc.write_scaled_word(f"D{current_offset + 2}", target_data[2], multiplier=1000) # Z
+                        plc.write_scaled_word(f"D{current_offset + 3}", target_data[3], multiplier=1000) # Roll
+                        plc.write_scaled_word(f"D{current_offset + 4}", target_data[4], multiplier=1000) # Pitch
+                        plc.write_scaled_word(f"D{current_offset + 5}", target_data[5], multiplier=1000) # Yaw
 
-                    # 6. ส่งสัญญาณกลับ (Handshake Done) ไปที่ M101 ว่าคำนวณเสร็จแล้ว
+                    print(f"[PLC] Sent 6-DOF Data for {num_targets} points successfully.")
+
+                    # 6. ส่งสัญญาณกลับ (Handshake Done) ไปที่ M1001 (status_device) ว่าคำนวณเสร็จแล้ว
                     plc.write_bit(config['plc']['status_device'], 1)
                     
                     # หน่วงเวลาเล็กน้อยให้ PLC รับรู้ แล้วเคลียร์สัญญาณ Done
                     time.sleep(0.5)
                     plc.write_bit(config['plc']['status_device'], 0)
+                    
+                    print("[PLC] Handshake complete. Waiting for next trigger...")
+                    
+                    # เคลียร์ Trigger M1000 (trigger_device) กลับเป็น 0
+                    plc.write_bit(config['plc']['trigger_device'], 0)
                     
                     print("[PLC] Handshake complete. Waiting for next trigger...")
                     

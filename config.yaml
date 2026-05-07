@@ -4,17 +4,26 @@ camera:
 plc:
   ip: "192.168.1.165"
   port: 5010
-  # กำหนด Device สำหรับ Trigger และพิกัด
-  trigger_device: "M100"       # PLC ส่งค่ามาเพื่อบอกให้ Vision บันทึกค่า
-  status_device: "M101"        # Vision ส่งค่ากลับไปบอกว่าส่งข้อมูลเสร็จแล้ว
-  devices:
-    x: "D1001"
-    y: "D1002"
-    z: "D1003"
-    roll: "D1004"
-    pitch: "D1005"
-    yaw: "D1006"
+  # --- Communication & Handshake ---
+  heartbeat_device: "D1000"    # Check communication
+  error_device: "D1100"        # Error code
+  trigger_device: "M1000"      # Trigger Send from PLC
+  status_device: "M1001"       # Trigger Send cmd received_OK (Handshake)
+
+  # --- 6-DOF Data ---
+  point_count_device: "D1101"  # Amount of points (บอกจำนวนชุดข้อมูลที่พบ)
+  data_start_device: "D1001"   # จุดเริ่มต้นของ Data (D1001++)
+  
+  # ลำดับการเรียงข้อมูลในแต่ละชุด (Offset)
+  # 1 ชุดประกอบด้วย 6 registers: X, Y, Z, Roll, Pitch, Yaw
+  registers_per_point: 6
+  max_points: 5
+
 paths:
-  template_dir: "data/templates"
   save_dir: "data/logs"
+  template_dir: "data/templates"
   position_mem: "data/logs/position_mem.json"
+
+camera:
+  resolution_width: 640
+  resolution_height: 480
