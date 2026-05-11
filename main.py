@@ -56,10 +56,10 @@ def main():
             with open(os.path.join(config['paths']['save_dir'], "current_detect.json"), "w") as f:
                 json.dump(realtime_status, f)
 
-            if args.debug:
-                cv2.imshow("Vision System - Main Camera", display_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == 27 or key == ord('q'): break
+            
+            cv2.imshow("Vision System - Main Camera", display_frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or key == ord('q'): break
 
             # 2. ตรวจสอบสัญญาณ Trigger จาก PLC
             trigger_status = plc.read_bit(config['plc']['trigger_device'])
