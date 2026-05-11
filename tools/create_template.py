@@ -242,7 +242,6 @@ def main():
                         print(f"[SUCCESS] Saved full metadata to {CURRENT_TARGET_NAME}_meta.json")
 
                         # --- โหมด Debug เท่านั้นถึงจะสร้าง .ply และโชว์ 3D ---
-                        # --- โหมด Debug เท่านั้นถึงจะสร้าง .ply และโชว์ 3D ---
                         if IS_DEBUG:
                             print("[DEBUG] Generating PLY files and showing 3D Alignment...")
                             

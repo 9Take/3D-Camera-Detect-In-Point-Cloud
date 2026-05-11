@@ -147,7 +147,8 @@ def main():
                 extracted_6dof = transformer.extract_3d_data(
                     filtered_pixels, 
                     filtered_names, 
-                    show_3d=args.debug
+                    show_3d=args.debug,
+                    save_ply=args.debug
                 )
                 
                 if extracted_6dof:

@@ -20,7 +20,7 @@ class PointCloudTransformer:
         self.res_height = res_height
         self.save_dir = save_dir
 
-    def extract_3d_data(self, target_pixels, target_names, show_3d=True):
+    def extract_3d_data(self, target_pixels, target_names, show_3d=True, save_ply=False):
         ret, depth_raw, color_raw = self.camera.get_raw_frame()
         if not ret: return {}
 
@@ -47,7 +47,7 @@ class PointCloudTransformer:
 
         extracted_6dof = {}
         
-        # สำหรับเก็บวัตถุ 3D (Sphere และ Axis) ของทุกตัวที่ประมวลผลสำเร็จ เพื่อเอาไว้วาดทีเดียวพร้อมกัน
+        # สำหรับเก็บวัตถุ 3D เพื่อใช้วาด
         geometries_to_draw = [{"name": "pcd", "geometry": pcd, "material": o3d.visualization.rendering.MaterialRecord()}]
         geometries_to_draw[0]["material"].shader = "defaultUnlit"
 
@@ -57,9 +57,8 @@ class PointCloudTransformer:
             
             # --- อัปเกรด Logic แก้ไขจุดบอดของกล้อง (อ่านค่าความลึกเป็น 0) ---
             if target_z_raw <= 0:
-                # ลองค้นหาค่าเฉลี่ยในพื้นที่รอบๆ โดยขยายรัศมีออกไปเรื่อยๆ (ขยายสูงสุดเป็น 15x15 pixels)
                 found_valid_depth = False
-                for r in range(2, 8):  # ลองขยายรัศมีทีละ 2, 3, 4, 5, 6, 7 พิกเซล
+                for r in range(2, 8):
                     y_min, y_max = max(0, v - r), min(self.res_height, v + r + 1)
                     x_min, x_max = max(0, u - r), min(self.res_width, u + r + 1)
                     
@@ -67,7 +66,6 @@ class PointCloudTransformer:
                     valid_depths = roi[roi > 0]
                     
                     if len(valid_depths) > 0:
-                        # นำค่าเฉลี่ยที่ได้มาใช้งาน และหลุดออกจากลูป
                         target_z_raw = np.mean(valid_depths)
                         found_valid_depth = True
                         print(f"[TRANSFORMER] Remedied Depth for '{target_name}' at radius {r}. Depth: {target_z_raw * depth_scale:.4f}m")
@@ -98,27 +96,24 @@ class PointCloudTransformer:
             rotation_matrix = np.column_stack((x_axis, y_axis, z_axis))
             roll, pitch, yaw = rotation_matrix_to_euler_angles(rotation_matrix)
             
-            # บันทึกข้อมูล 6-DOF
             extracted_6dof[target_name] = [target_x, -target_y, -target_z, roll, pitch, yaw]
 
-            # บันทึกไฟล์ .ply แยกของแต่ละวัตถุตามปกติ
-            try:
-                ply_path = os.path.join(self.save_dir, f"{target_name}_scene.ply")
-                o3d.io.write_point_cloud(ply_path, pcd)
-                print(f"[TRANSFORMER] Saved Point Cloud to {ply_path}")
-            except Exception as e:
-                print(f"[ERROR] Could not save .ply: {e}")
+            # --- บันทึกไฟล์ .ply เฉพาะกรณีที่เปิดการตั้งค่า save_ply เท่านั้น ---
+            if save_ply:
+                try:
+                    ply_path = os.path.join(self.save_dir, f"{target_name}_scene.ply")
+                    o3d.io.write_point_cloud(ply_path, pcd)
+                    print(f"[TRANSFORMER] Saved Point Cloud to {ply_path}")
+                except Exception as e:
+                    print(f"[ERROR] Could not save .ply: {e}")
 
-            # สร้ากราฟิก 3D (Sphere & Axis) ของตัวนี้ เตรียมนำไปแสดงรวมกัน
+            # สร้างกราฟิก 3D (Sphere & Axis) ของตัวนี้
             if show_3d:
-                # สร้าง Sphere สีเขียว (จุด Center 3D)
                 target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
-                # แยกสีเพื่อให้ดูง่าย (A = เขียว, B = ฟ้า)
                 ball_color = [0, 1, 0] if target_name.startswith('A') else [0, 0.8, 1]
                 target_ball.paint_uniform_color(ball_color)
                 target_ball.translate(exact_target_pos)
                 
-                # สร้าง แกน 3 มิติ (Local Coordinate Frame)
                 axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.04, origin=[0,0,0])
                 axis.rotate(rotation_matrix, center=[0,0,0])
                 axis.translate(exact_target_pos)
@@ -129,7 +124,6 @@ class PointCloudTransformer:
                 geometries_to_draw.append({"name": f"target_{target_name}", "geometry": target_ball, "material": mat_unlit})
                 geometries_to_draw.append({"name": f"axis_{target_name}", "geometry": axis, "material": mat_unlit})
 
-        # --- ส่วนแสดงผลหน้าต่าง Open3D หลังคำนวณวัตถุครบทุกชิ้นแล้ว ---
         if show_3d and len(geometries_to_draw) > 1:
             o3d.visualization.draw(geometries_to_draw, title="All Targets 6-DOF Detection Grid")
             

@@ -35,8 +35,8 @@ plc:
   max_points: 5
 
 paths:
-  save_dir: "data/logs"
-  template_dir: "data/templates"
+  save_dir: "data/templates/model"
+  template_dir: "data/templates/model"
   position_mem: "data/logs/position_mem.json"
 
 camera:
