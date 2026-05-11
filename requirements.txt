@@ -28,6 +28,7 @@ nest-asyncio==1.6.0
 numpy==1.24.3
 open3d==0.17.0
 opencv-python==4.7.0.72
+urllib3==2.2.3
 packaging==26.2
 pillow==10.4.0
 pkg_resources==0.0.0
@@ -48,3 +49,5 @@ typing_extensions==4.13.2
 urllib3==2.2.3
 Werkzeug==3.0.6
 zipp==3.20.2
+pymcprotocol==0.3.0
+PyYAML==6.0.3
