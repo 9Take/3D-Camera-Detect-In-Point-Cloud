@@ -6,7 +6,7 @@ import os
 import argparse
 import numpy as np
 
-# อิมพอร์ตโมดูลต่างๆ (ปรับชื่อโฟลเดอร์ให้ตรงกับโครงสร้างของคุณ)
+# อิมพอร์ตโมดูลต่างๆ ตามโครงสร้าง Project Root
 from communication.realsense import DepthCamera
 from communication.plc_comm import PLCCommunicator
 from core.detector import ObjectDetector
@@ -42,12 +42,12 @@ def main():
 
             color_frame = np.asanyarray(color_raw.get_data())
             
-            # 1. ค้นหาวัตถุ (2D Detection) - เพิ่ม confidences
+            # 1. ค้นหาวัตถุทั้งหมด (2D Detection)
             detected_pixels, detected_names, confidences, display_frame = detector.detect(
                 color_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
             )
 
-            # อัปเดตสถานะแบบ Real-time ลง JSON (สำหรับทำ Dashboard ดูผ่านเว็บได้)
+            # อัปเดตสถานะแบบ Real-time ลง JSON
             realtime_status = {
                 "timestamp": time.time(),
                 "targets_in_view": detected_names,
@@ -56,32 +56,60 @@ def main():
             with open(os.path.join(config['paths']['save_dir'], "current_detect.json"), "w") as f:
                 json.dump(realtime_status, f)
 
-            if args.debug:
-                cv2.imshow("Vision System - Main Camera", display_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == 27 or key == ord('q'): break
+            
+            cv2.imshow("Vision System - Main Camera", display_frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or key == ord('q'): break
 
             # 2. ตรวจสอบสัญญาณ Trigger จาก PLC
-            # (ถ้า PLC ส่งค่า M100 มาเป็น 1 แปลว่าหุ่นยนต์หยุดนิ่งและพร้อมรับค่าแล้ว)
             trigger_status = plc.read_bit(config['plc']['trigger_device'])
             
             if trigger_status[0] == 1 and len(detected_pixels) > 0:
-                print("\n[TRIGGER] Received signal from PLC. Extracting 6-DOF...")
+                print("\n[TRIGGER] Received signal from PLC. Finding best A and B templates...")
                 
-                # 3. คำนวณพิกัด 3D แบบแม่นยำ ณ วินาทีนั้น
+                # --- FILTERING LOGIC: หาตัวที่มี Confidence สูงสุดของ A และ B ---
+                best_a_idx = -1
+                best_a_conf = -1.0
+                best_b_idx = -1
+                best_b_conf = -1.0
+                
+                for idx, (name, conf) in enumerate(zip(detected_names, confidences)):
+                    if name.startswith('A'):
+                        if conf > best_a_conf:
+                            best_a_conf = conf
+                            best_a_idx = idx
+                    elif name.startswith('B'):
+                        if conf > best_b_conf:
+                            best_b_conf = conf
+                            best_b_idx = idx
+                
+                filtered_pixels = []
+                filtered_names = []
+                
+                if best_a_idx != -1:
+                    filtered_pixels.append(detected_pixels[best_a_idx])
+                    filtered_names.append("A")
+                    
+                if best_b_idx != -1:
+                    filtered_pixels.append(detected_pixels[best_b_idx])
+                    filtered_names.append("B")
+                
+                if len(filtered_pixels) == 0:
+                    print("[WARNING] Trigger received but no valid 'A' or 'B' targets found.")
+                    plc.write_bit(config['plc']['trigger_device'], 0)
+                    continue
+
+                # 3. คำนวณพิกัด 3D
                 extracted_6dof = transformer.extract_3d_data(
-                    detected_pixels, 
-                    detected_names, 
+                    filtered_pixels, 
+                    filtered_names, 
                     show_3d=args.debug
                 )
-                
-                # วางโค้ดใหม่ส่วนนี้ต่อจาก extracted_6dof = transformer.extract_3d_data(...)
                 
                 if extracted_6dof:
                     print(f"\n[INFO] Found {len(extracted_6dof)} targets.")
                     
-                    # --- 1. [แก้ปัญหา JSON] บันทึกค่าลง JSON ก่อนส่ง PLC ---
-                    # ปรับให้บันทึกได้หลายเป้าหมายพร้อมกัน
+                    # บันทึกค่าลง JSON ก่อนส่ง PLC
                     memory_state = {
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "targets": {}
@@ -99,55 +127,43 @@ def main():
                     with open(config['paths']['position_mem'], "w") as f:
                         json.dump(memory_state, f, indent=4)
                     print(f"[LOG] Memory saved to {config['paths']['position_mem']}")
-                    # ----------------------------------------------------
-
-                    # 2. ส่งจำนวนจุดที่พบไปที่ D1101 (จำกัดสูงสุดตาม max_points ใน config)
+                    
                     num_targets = min(len(extracted_6dof), config['plc']['max_points'])
                     plc.write_scaled_word(config['plc']['point_count_device'], num_targets, multiplier=1)
 
-                    # เตรียมตัวแปรหาเลขเริ่มต้น (ดึงเลข 1001 ออกมาจาก "D1001")
-                    start_reg_num = int(config['plc']['data_start_device'][1:]) 
+                    target_configs = config['plc'].get('targets', {})
                     
-                    # 3. วนลูปส่งข้อมูลทีละชุด
+                    # 4. วนลูปส่งข้อมูลไป PLC แบบเจาะจง Register
                     for i, (target_name, target_data) in enumerate(list(extracted_6dof.items())[:num_targets]):
                         
-                        # target_data ตอนนี้คือ [X, Y, Z, Roll_rad, Pitch_rad, Yaw_rad]
+                        if target_name not in target_configs:
+                            continue
+                            
+                        t_conf = target_configs[target_name]
                         x, y, z = target_data[0:3]
                         r_rad, p_rad, yw_rad = target_data[3:6]
-                        
-                        # แปลงเป็น Degree สำหรับการ Print
                         r_deg, p_deg, yw_deg = np.rad2deg([r_rad, p_rad, yw_rad])
 
-                        # [TODO 1] ปริ้นทั้ง Rad และ Degree ในบรรทัดเดียว
                         print(f"[{i+1}/{num_targets}] Target '{target_name}'")
                         print(f" ➔ Pos(m): X:{x:.4f}, Y:{y:.4f}, Z:{z:.4f}")
                         print(f" ➔ Ori(rad): R:{r_rad:.4f}, P:{p_rad:.4f}, Y:{yw_rad:.4f}")
                         print(f" ➔ Ori(deg): R:{r_deg:.2f}°, P:{p_deg:.2f}°, Y:{yw_deg:.2f}°")
                         
-                        current_offset = start_reg_num + (i * config['plc']['registers_per_point'])
+                        plc.write_scaled_word(t_conf['Input_X'], x, multiplier=10000) 
+                        plc.write_scaled_word(t_conf['Input_Y'], y, multiplier=10000)
+                        plc.write_scaled_word(t_conf['Input_Z'], z, multiplier=10000)
+                        plc.write_scaled_word(t_conf['Input_r'], r_rad, multiplier=10000)
+                        plc.write_scaled_word(t_conf['Input_p'], p_rad, multiplier=10000)
+                        plc.write_scaled_word(t_conf['Input_y'], yw_rad, multiplier=10000)
                         
-                        # ส่ง Position (เมตร * 1000 = มิลลิเมตร เพื่อรักษาทศนิยม 3 ตำแหน่งในรูปแบบ Int)
-                        plc.write_scaled_word(f"D{current_offset}",     x, multiplier=1000) 
-                        plc.write_scaled_word(f"D{current_offset + 1}", y, multiplier=1000)
-                        plc.write_scaled_word(f"D{current_offset + 2}", z, multiplier=1000)
-                        
-                        # ส่ง Orientation เป็น Radian (คูณ 1000 เพื่อรักษาทศนิยม 3 ตำแหน่ง)
-                        # เช่น 0.1234 rad -> PLC จะได้รับ 123
-                        plc.write_scaled_word(f"D{current_offset + 3}", r_rad, multiplier=1000)
-                        plc.write_scaled_word(f"D{current_offset + 4}", p_rad, multiplier=1000)
-                        plc.write_scaled_word(f"D{current_offset + 5}", yw_rad, multiplier=1000)
                     print(f"[PLC] Sent 6-DOF Data for {num_targets} points successfully.")
 
-                    # 4. ส่งสัญญาณกลับ (Handshake Done) ไปที่ M1001 ว่าคำนวณและส่งค่าเสร็จแล้ว
+                    # 5. Handshake
                     plc.write_bit(config['plc']['status_device'], 1)
-                    
-                    # หน่วงเวลาเล็กน้อยให้ PLC รับรู้ แล้วเคลียร์สัญญาณ Done
                     time.sleep(0.5)
                     plc.write_bit(config['plc']['status_device'], 0)
                     
-                    print("[PLC] Handshake complete. Waiting for next trigger...")
-                    
-                    # เคลียร์ Trigger M1000 กลับเป็น 0
+                    print("[PLC] Handshake complete. Waiting for next trigger...\n")
                     plc.write_bit(config['plc']['trigger_device'], 0) 
 
     except KeyboardInterrupt:

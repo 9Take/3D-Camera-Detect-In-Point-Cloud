@@ -12,7 +12,22 @@ plc:
 
   # --- 6-DOF Data ---
   point_count_device: "D1101"  # Amount of points (บอกจำนวนชุดข้อมูลที่พบ)
-  data_start_device: "D1001"   # จุดเริ่มต้นของ Data (D1001++)
+
+  targets:
+    "A":
+      Input_X: "D1001"
+      Input_Y: "D1002"
+      Input_Z: "D1003"
+      Input_r: "D1004"
+      Input_p: "D1005"
+      Input_y: "D1006"
+    "B":
+      Input_X: "D1011"
+      Input_Y: "D1012"
+      Input_Z: "D1013"
+      Input_r: "D1014"
+      Input_p: "D1015"
+      Input_y: "D1016"
   
   # ลำดับการเรียงข้อมูลในแต่ละชุด (Offset)
   # 1 ชุดประกอบด้วย 6 registers: X, Y, Z, Roll, Pitch, Yaw
