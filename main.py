@@ -19,6 +19,8 @@ def load_config():
 def main():
     parser = argparse.ArgumentParser(description="Heat Exchanger Vision System")
     parser.add_argument('--debug', action='store_true', help='เปิดหน้าต่างเพื่อดูการตรวจจับ 2D และ 3D Point Cloud')
+    parser.add_argument('--show2d', action='store_true', help='แสดงผลการตรวจจับ 2D')
+   
     args = parser.parse_args()
 
     config = load_config()
@@ -56,10 +58,15 @@ def main():
             with open(os.path.join(config['paths']['save_dir'], "current_detect.json"), "w") as f:
                 json.dump(realtime_status, f)
 
-            
-            cv2.imshow("Vision System - Main Camera", display_frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == 27 or key == ord('q'): break
+            if args.debug:
+                cv2.imshow("Vision System - Main Camera", display_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27 or key == ord('q'): break
+            if args.show2d:
+                cv2.imshow("2D Detection", display_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27 or key == ord('q'): break
+
 
             # 2. ตรวจสอบสัญญาณ Trigger จาก PLC
             trigger_status = plc.read_bit(config['plc']['trigger_device'])
