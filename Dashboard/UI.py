@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import streamlit as st
 import yaml
+import re
 from pathlib import Path
 import os
 
@@ -26,6 +27,12 @@ def load_config() -> dict:
 def save_config(cfg: dict):
     with open(CONFIG_PATH, "w") as f:
         yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+def is_valid_ip(ip: str) -> bool:
+    pattern = r"^(\d{1,3}\.){3}\d{1,3}$"
+    if not re.match(pattern, ip):
+        return False
+    return all(0 <= int(part) <= 255 for part in ip.split("."))
 
 def parse_device(device_str: str) -> tuple[str, int]:
     """แยกตัวอักษรและตัวเลขออกจากกัน เช่น 'D1000' -> ('D', 1000)"""
@@ -63,6 +70,7 @@ if st.session_state.get("load_error"):
     st.stop()
 
 cfg: dict = st.session_state.get("cfg", {})
+errors: list[str] = []
 
 # ---------------------------------------------------------------------------
 # Tabs
@@ -77,13 +85,39 @@ tab_plc_conn, tab_plc_devices, tab_targets, tab_preview = st.tabs([
 
 # ── PLC Connection ───────────────────────────────────────────────────────────
 with tab_plc_conn:
-    st.header("การเชื่อมต่อ PLC")
+    st.header("การเชื่อมต่อเครือข่าย PLC")
+    st.info("ตรวจสอบให้แน่ใจว่า PC และ PLC อยู่ในวงเครือข่าย (Subnet) เดียวกัน")
+    
     plc = cfg.setdefault("plc", {})
-    col1, col2 = st.columns([3, 1])
+    
+    st.subheader("Network Settings")
+    col1, col2 = st.columns(2)
+    
     with col1:
-        plc["ip"] = st.text_input("PLC IP Address", value=str(plc.get("ip", "192.168.1.165")))
+        ip_val = st.text_input("PLC IP Address", value=str(plc.get("ip", "192.168.1.165")))
+        if not is_valid_ip(ip_val):
+            st.warning("⚠️ รูปแบบ IP Address ไม่ถูกต้อง")
+            errors.append("รูปแบบ PLC IP Address ไม่ถูกต้อง")
+        else:
+            plc["ip"] = ip_val
+
+        subnet_val = st.text_input("Subnet Mask", value=str(plc.get("subnet_mask", "255.255.255.0")))
+        if not is_valid_ip(subnet_val):
+            st.warning("⚠️ รูปแบบ Subnet Mask ไม่ถูกต้อง")
+            errors.append("รูปแบบ Subnet Mask ไม่ถูกต้อง")
+        else:
+            plc["subnet_mask"] = subnet_val
+
     with col2:
         plc["port"] = st.number_input("Port", 1, 65535, int(plc.get("port", 5010)))
+        
+        gw_val = st.text_input("Default Gateway", value=str(plc.get("gateway", "")), placeholder="เว้นว่างไว้หากไม่มี Gateway")
+        # Allow empty string for gateway, but validate if user types something
+        if gw_val.strip() != "" and not is_valid_ip(gw_val):
+            st.warning("⚠️ รูปแบบ Gateway ไม่ถูกต้อง")
+            errors.append("รูปแบบ Gateway ไม่ถูกต้อง")
+        else:
+            plc["gateway"] = gw_val.strip()
 
 # ── PLC Devices (Optimized Selection) ───────────────────────────────────────
 with tab_plc_devices:
@@ -130,9 +164,8 @@ with tab_targets:
             for i, field in enumerate(fields):
                 with cols[i % 3]:
                     current_val = tdata.get(field, "D2000")
-                    _, addr = parse_device(current_val) # ไม่สนใจ prefix เดิม เพราะบังคับเป็น D
+                    _, addr = parse_device(current_val) 
                     
-                    # เลย์เอาต์แสดงตัวอักษร D คงที่ พร้อมช่องกรอกตัวเลข
                     st.write(f"**{field}**")
                     c1, c2 = st.columns([1, 5])
                     with c1:
@@ -144,7 +177,7 @@ with tab_targets:
                             max_value=61439, 
                             value=addr, 
                             key=f"num_{tname}_{field}",
-                            label_visibility="collapsed" # ซ่อน Label เพื่อความสวยงาม
+                            label_visibility="collapsed" 
                         )
                     tdata[field] = f"D{a}"
 
@@ -159,7 +192,11 @@ with tab_preview:
 # Save button
 # ---------------------------------------------------------------------------
 st.divider()
-if st.button("💾 บันทึกการตั้งค่า", type="primary", use_container_width=True):
+
+if errors:
+    st.error("กรุณาแก้ไขข้อผิดพลาดต่อไปนี้ก่อนบันทึก:\n" + "\n".join(f"• {e}" for e in errors))
+
+if st.button("💾 บันทึกการตั้งค่า", type="primary", use_container_width=True, disabled=bool(errors)):
     try:
         save_config(cfg)
         st.success(f"✅ บันทึกสำเร็จที่ `{CONFIG_PATH.resolve()}`")
