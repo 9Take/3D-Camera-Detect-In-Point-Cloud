@@ -17,8 +17,20 @@ file_in_root = os.path.join(project_root, "config.yaml")
 CONFIG_PATH = Path(file_in_root)
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers & Cache (เพื่อลดความหน่วงตอนโหลดข้อมูลแสนกว่ารายการ)
 # ---------------------------------------------------------------------------
+
+@st.cache_data
+def get_md_devices() -> list[str]:
+    """สร้างลิสต์รายการ M0-M61439 และ D0-D61439 สำหรับเมนู Dropdown"""
+    m_list = [f"M{i}" for i in range(61440)]
+    d_list = [f"D{i}" for i in range(61440)]
+    return m_list + d_list
+
+@st.cache_data
+def get_d_devices() -> list[str]:
+    """สร้างลิสต์รายการ D0-D61439 (เฉพาะ D) สำหรับ Targets"""
+    return [f"D{i}" for i in range(61440)]
 
 def load_config() -> dict:
     with open(CONFIG_PATH, "r") as f:
@@ -33,17 +45,6 @@ def is_valid_ip(ip: str) -> bool:
     if not re.match(pattern, ip):
         return False
     return all(0 <= int(part) <= 255 for part in ip.split("."))
-
-def parse_device(device_str: str) -> tuple[str, int]:
-    """แยกตัวอักษรและตัวเลขออกจากกัน เช่น 'D1000' -> ('D', 1000)"""
-    if not device_str or len(device_str) < 2:
-        return "D", 0
-    prefix = device_str[0].upper()
-    try:
-        addr = int(device_str[1:])
-    except ValueError:
-        addr = 0
-    return prefix if prefix in ["M", "D"] else "D", addr
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -72,13 +73,17 @@ if st.session_state.get("load_error"):
 cfg: dict = st.session_state.get("cfg", {})
 errors: list[str] = []
 
+# โหลดตัวเลือกสำหรับ Dropdown ไว้ล่วงหน้า
+options_md = get_md_devices()
+options_d = get_d_devices()
+
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
 
 tab_plc_conn, tab_plc_devices, tab_targets, tab_preview = st.tabs([
     "🔌 PLC Connection",
-    "📋 PLC Devices (Optimized)",
+    "📋 PLC Devices (M/D)",
     "🎯 Target Registers (D Only)",
     "🗒️ YAML Preview",
 ])
@@ -112,47 +117,45 @@ with tab_plc_conn:
         plc["port"] = st.number_input("Port", 1, 65535, int(plc.get("port", 5010)))
         
         gw_val = st.text_input("Default Gateway", value=str(plc.get("gateway", "")), placeholder="เว้นว่างไว้หากไม่มี Gateway")
-        # Allow empty string for gateway, but validate if user types something
         if gw_val.strip() != "" and not is_valid_ip(gw_val):
             st.warning("⚠️ รูปแบบ Gateway ไม่ถูกต้อง")
             errors.append("รูปแบบ Gateway ไม่ถูกต้อง")
         else:
             plc["gateway"] = gw_val.strip()
 
-# ── PLC Devices (Optimized Selection) ───────────────────────────────────────
+# ── PLC Devices (Searchable Dropdown) ───────────────────────────────────────
 with tab_plc_devices:
     st.header("ตั้งค่าอุปกรณ์ PLC (M / D)")
-    st.info("ช่วงที่รองรับ: M0-M61439 และ D0-D61439")
+    st.info("💡 สามารถคลิกแล้วพิมพ์ค้นหาได้เลย (เช่น พิมพ์ D1000)")
 
-    def optimized_device_input(label: str, key: str, default: str):
-        current_val = str(plc.get(key, default))
-        prefix, addr = parse_device(current_val)
+    def combined_device_input(label: str, key: str, default: str):
+        current_val = str(plc.get(key, default)).upper()
         
-        col_pre, col_num = st.columns([1, 3])
-        with col_pre:
-            new_prefix = st.selectbox("Type", ["M", "D"], index=0 if prefix == "M" else 1, key=f"pre_{key}")
-        with col_num:
-            new_addr = st.number_input(f"{label} (0-61439)", 0, 61439, addr, key=f"num_{key}")
-        
-        final_device = f"{new_prefix}{new_addr}"
-        plc[key] = final_device
-        return final_device
+        # หา Index ของค่าเดิมใน List (ถ้าไม่มีให้ใช้ค่า Default)
+        try:
+            idx = options_md.index(current_val)
+        except ValueError:
+            idx = options_md.index(default) if default in options_md else 0
+            
+        selected = st.selectbox(label, options=options_md, index=idx, key=f"sel_{key}")
+        plc[key] = selected
+        return selected
 
     plc = cfg.setdefault("plc", {})
     
     st.markdown("##### Communication / Handshake")
-    optimized_device_input("Heartbeat Register", "heartbeat_device", "D1000")
-    optimized_device_input("Error Code Register", "error_device", "D1100")
+    combined_device_input("Heartbeat Register", "heartbeat_device", "D1000")
+    combined_device_input("Error Code Register", "error_device", "D1100")
 
     st.markdown("---")
     st.markdown("##### Trigger / Status Bits")
-    optimized_device_input("Trigger Bit (PLC → PC)", "trigger_device", "M1000")
-    optimized_device_input("Status / ACK Bit (PC → PLC)", "status_device", "M1001")
+    combined_device_input("Trigger Bit (PLC → PC)", "trigger_device", "M1000")
+    combined_device_input("Status / ACK Bit (PC → PLC)", "status_device", "M1001")
 
-# ── Target Registers (D Only) ────────────────────────────────────────────────
+# ── Target Registers (D Only - Searchable Dropdown) ──────────────────────────
 with tab_targets:
     st.header("Target Output Registers")
-    st.info("📌 ตำแหน่งของเป้าหมายรองรับเฉพาะ **D Register (D0 - D61439)** เท่านั้น หากพิมพ์ค่าเกิน ระบบจะปรับเป็น 61439 ให้อัตโนมัติ")
+    st.info("📌 รองรับเฉพาะ **D Register (D0 - D61439)** สามารถพิมพ์ค้นหาในช่องได้เลย")
     
     targets: dict = plc.setdefault("targets", {})
 
@@ -163,23 +166,26 @@ with tab_targets:
             
             for i, field in enumerate(fields):
                 with cols[i % 3]:
-                    current_val = tdata.get(field, "D2000")
-                    _, addr = parse_device(current_val) 
+                    current_val = str(tdata.get(field, "D2000")).upper()
                     
+                    # บังคับให้เป็น D เสมอ (กรณีไฟล์เก่าติดค่า M มา)
+                    if not current_val.startswith("D"):
+                        current_val = "D2000"
+                        
+                    try:
+                        idx = options_d.index(current_val)
+                    except ValueError:
+                        idx = options_d.index("D2000")
+                        
                     st.write(f"**{field}**")
-                    c1, c2 = st.columns([1, 5])
-                    with c1:
-                        st.markdown("<h4 style='text-align: center; margin-top: 5px;'>D</h4>", unsafe_allow_html=True)
-                    with c2:
-                        a = st.number_input(
-                            "Address", 
-                            min_value=0, 
-                            max_value=61439, 
-                            value=addr, 
-                            key=f"num_{tname}_{field}",
-                            label_visibility="collapsed" 
-                        )
-                    tdata[field] = f"D{a}"
+                    selected = st.selectbox(
+                        "Address", 
+                        options=options_d, 
+                        index=idx, 
+                        key=f"sel_{tname}_{field}",
+                        label_visibility="collapsed"
+                    )
+                    tdata[field] = selected
 
 # ── YAML Preview ─────────────────────────────────────────────────────────────
 with tab_preview:
