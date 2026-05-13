@@ -256,7 +256,7 @@ def main():
                             print(f"[DEBUG] Saved {CURRENT_TARGET_NAME}_object.ply and marker.ply in {SAVE_DIR}")
 
                             # 3. โชว์ 3D 
-                            target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
+                            target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.000005)
                             target_ball.paint_uniform_color([0, 1, 0])
                             target_ball.translate(exact_target_pos)
                             

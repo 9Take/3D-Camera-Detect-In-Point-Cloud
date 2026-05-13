@@ -52,6 +52,25 @@ def is_valid_ip(ip: str) -> bool:
         return False
     return all(0 <= int(part) <= 255 for part in ip.split("."))
 
+def read_plc_value(client, addr: str) -> str:
+    """ฟังก์ชันช่วยอ่านค่า PLC และแปลงเป็น String สำหรับแสดงผล"""
+    if not addr or client is None:
+        return "N/A"
+    prefix = addr[0].upper()
+    try:
+        if prefix == 'M':
+            val = client.read_bit(addr)
+            return str(val[0]) if val else "Error"
+        elif prefix == 'D':
+            if hasattr(client, 'read_word'):
+                val = client.read_word(addr)
+                return str(val[0]) if val else "Error"
+            else:
+                return "N/A (No read_word)"
+    except Exception:
+        return "Error"
+    return "N/A"
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -85,19 +104,21 @@ options_md = get_md_devices()
 options_d = get_d_devices()
 
 # ---------------------------------------------------------------------------
-# Tabs
+# Navigation (ใช้ Radio แนวนอนแทน Tabs เพื่อแก้ปัญหาการเด้งกลับหน้าแรก)
 # ---------------------------------------------------------------------------
-
-tab_plc_conn, tab_plc_devices, tab_targets, tab_monitor, tab_preview = st.tabs([
+st.write("---")
+menu_options = [
     "🔌 PLC Connection",
     "📋 PLC Devices (M/D)",
     "🎯 Target Registers",
     "📡 PLC Monitor (Live)",
-    "🗒️ YAML Preview",
-])
+    "🗒️ YAML Preview"
+]
+active_tab = st.radio("Navigation Menu", menu_options, horizontal=True, label_visibility="collapsed")
+st.write("---")
 
 # ── PLC Connection ───────────────────────────────────────────────────────────
-with tab_plc_conn:
+if active_tab == "🔌 PLC Connection":
     st.header("การเชื่อมต่อเครือข่าย PLC")
     plc = cfg.setdefault("plc", {})
     col1, col2 = st.columns(2)
@@ -124,8 +145,10 @@ with tab_plc_conn:
             plc["gateway"] = gw_val.strip()
 
 # ── PLC Devices ──────────────────────────────────────────────────────────────
-with tab_plc_devices:
+elif active_tab == "📋 PLC Devices (M/D)":
     st.header("ตั้งค่าอุปกรณ์ PLC (M / D)")
+    plc = cfg.setdefault("plc", {})
+    
     def combined_device_input(label: str, key: str, default: str):
         current_val = str(plc.get(key, default)).upper()
         idx = options_md.index(current_val) if current_val in options_md else options_md.index(default)
@@ -133,7 +156,6 @@ with tab_plc_devices:
         plc[key] = selected
         return selected
 
-    plc = cfg.setdefault("plc", {})
     st.markdown("##### Communication / Handshake")
     combined_device_input("Heartbeat Register", "heartbeat_device", "D1000")
     combined_device_input("Error Code Register", "error_device", "D1100")
@@ -142,8 +164,9 @@ with tab_plc_devices:
     combined_device_input("Status / ACK Bit (PC → PLC)", "status_device", "M1001")
 
 # ── Target Registers ─────────────────────────────────────────────────────────
-with tab_targets:
+elif active_tab == "🎯 Target Registers":
     st.header("Target Output Registers")
+    plc = cfg.setdefault("plc", {})
     targets: dict = plc.setdefault("targets", {})
 
     for tname, tdata in targets.items():
@@ -161,16 +184,15 @@ with tab_targets:
                     tdata[field] = selected
 
 # ── PLC Monitor (Live Read) ──────────────────────────────────────────────────
-with tab_monitor:
+elif active_tab == "📡 PLC Monitor (Live)":
     st.header("📡 Live PLC Monitor")
-    st.info("เชื่อมต่อกับ PLC และทดลองอ่านค่า Register (M และ D) แบบ Real-time")
+    st.info("ระบบจะดึงค่าจาก Register ทุกตัวที่คุณตั้งไว้ในหน้าก่อนๆ มาแสดงผลพร้อมกัน")
+    plc = cfg.setdefault("plc", {})
 
     if PLCCommunicator is None:
         st.error("ไม่สามารถ import `PLCCommunicator` ได้ ตรวจสอบ Path หรือไฟล์ `communication/plc_comm.py`")
     else:
-        # แผงควบคุมการเชื่อมต่อ
         conn_col, status_col = st.columns([1, 2])
-        
         is_connected = st.session_state.plc_client is not None and st.session_state.plc_client.connected
         
         with conn_col:
@@ -196,45 +218,56 @@ with tab_monitor:
 
         st.divider()
 
-        # ส่วนอ่านค่า
+        # ส่วนอ่านค่าแบบแสดงผลทั้งหมด (Auto Read from Config)
         if is_connected:
-            st.subheader("อ่านค่า Register ปัจจุบัน")
-            read_col1, read_col2, read_col3 = st.columns([2, 1, 3])
+            col_title, col_btn = st.columns([4, 1])
+            with col_title:
+                st.subheader("📊 ข้อมูล Device ปัจจุบัน")
+            with col_btn:
+                do_read = st.button("🔄 ดึงค่าล่าสุด", use_container_width=True)
             
-            with read_col1:
-                test_device = st.selectbox("เลือก Address ที่ต้องการอ่าน", options=options_md, key="test_device")
+            # โชว์ข้อมูลเมื่อกดปุ่ม (หรือกดดึงค่า)
+            if do_read:
+                client = st.session_state.plc_client
                 
-            with read_col2:
-                st.write("")
-                st.write("")
-                do_read = st.button("📥 Read Value", use_container_width=True)
+                # 1. แสดงค่า System Devices
+                st.markdown("#### ⚙️ System Devices")
+                sys_cols = st.columns(4)
+                sys_devices = {
+                    "Heartbeat": plc.get("heartbeat_device", ""),
+                    "Error Code": plc.get("error_device", ""),
+                    "Trigger Bit": plc.get("trigger_device", ""),
+                    "Status Bit": plc.get("status_device", "")
+                }
                 
-            with read_col3:
-                if do_read:
-                    st.write("")
-                    st.write("")
-                    prefix = test_device[0]
-                    client = st.session_state.plc_client
-                    
-                    if prefix == 'M':
-                        val = client.read_bit(test_device)
-                        st.info(f"**{test_device}** = `{val[0]}` (Bit)")
-                    elif prefix == 'D':
-                        # เรียกใช้งาน read_word (ต้องแน่ใจว่าเพิ่มฟังก์ชันนี้ใน plc_comm.py แล้ว)
-                        if hasattr(client, 'read_word'):
-                            val = client.read_word(test_device)
-                            st.info(f"**{test_device}** = `{val[0]}` (Word 16-bit)")
-                        else:
-                            st.error("ไม่พบฟังก์ชัน `read_word` ในคลาส PLCCommunicator")
+                for i, (name, addr) in enumerate(sys_devices.items()):
+                    val = read_plc_value(client, addr)
+                    sys_cols[i].metric(label=f"{name} ({addr})", value=val)
+                
+                st.write("")
+                
+                # 2. แสดงค่า Target Registers ทั้งหมด
+                st.markdown("#### 🎯 Target Registers")
+                targets = plc.get("targets", {})
+                for tname, tdata in targets.items():
+                    st.markdown(f"**{tname}**")
+                    t_cols = st.columns(6)
+                    fields = ["Input_X", "Input_Y", "Input_Z", "Input_r", "Input_p", "Input_y"]
+                    for i, field in enumerate(fields):
+                        addr = tdata.get(field, "")
+                        val = read_plc_value(client, addr)
+                        t_cols[i].metric(label=f"{field} ({addr})", value=val)
+            else:
+                st.caption("👈 กดปุ่ม 'ดึงค่าล่าสุด' เพื่ออ่านข้อมูลทั้งหมดจาก PLC")
 
 # ── YAML Preview ─────────────────────────────────────────────────────────────
-with tab_preview:
+elif active_tab == "🗒️ YAML Preview":
     st.header("ตัวอย่างไฟล์ YAML")
     yaml_text = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)
     st.code(yaml_text, language="yaml")
 
 # ---------------------------------------------------------------------------
-# Save button
+# Save button (โชว์ทุกหน้า)
 # ---------------------------------------------------------------------------
 st.divider()
 
