@@ -18,7 +18,7 @@ class ObjectDetector:
             return templates
 
         for root, dirs, files in os.walk(template_dir):
-            dirs[:] = [d for d in dirs if d != 'debug']  # skip debug artifacts
+            dirs[:] = [d for d in dirs if len(d) == 1 and d.isupper()]  # only A/, B/, C/… group folders
             for filename in files:
                 if not filename.endswith('_template.png'):
                     continue
@@ -39,6 +39,8 @@ class ObjectDetector:
                     with open(txt_path, 'r') as f:
                         data = f.read().strip().split(',')
                         offset = (int(data[0]), int(data[1]))
+                else:
+                    print(f"[WARNING] No meta.json for '{target_name}' — using image center as offset")
 
                 kp, des = self.sift.detectAndCompute(template_img, None)
                 if des is not None and len(des) > 5:
