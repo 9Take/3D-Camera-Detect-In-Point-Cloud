@@ -31,7 +31,7 @@ class PointCloudTransformer:
         o3d_depth = o3d.geometry.Image(depth_np)
         
         intrinsics = depth_raw.profile.as_video_stream_profile().intrinsics
-        depth_scale = self.camera.get_depth_scale()
+        depth_scale = self.camera.depth_scale
         
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             o3d_color, o3d_depth, depth_scale=1.0/depth_scale, depth_trunc=1.5, convert_rgb_to_intensity=False)

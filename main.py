@@ -96,33 +96,35 @@ def main():
             # --- จัดการเรื่องการเปิดหน้าต่างแสดงผลตาม Argument ---
             if args.debug or args.show2d:
                 # 1. แสดงหน้าต่างหลัก (แสดงเฉพาะตัวพิกัดเดี่ยว Best A, Best B คลีนๆ)
-                window_title = "Vision System - Main Camera" if args.debug else "2D Detection"
+                window_title = "Vision System - Main Camera [q=Trigger 3D | ESC=Quit]" if args.debug else "2D Detection"
                 cv2.imshow(window_title, main_display)
-                
+
                 # 2. เรียกใช้เมธอดสร้าง Grid ผ่าน Class ObjectDetector ตรงๆ
                 grid_img = detector.build_sub_window_grid(
-                    color_frame, 
-                    detected_pixels, 
-                    detected_names, 
-                    confidences, 
-                    detected_homographies, 
-                    sub_w=280, 
+                    color_frame,
+                    detected_pixels,
+                    detected_names,
+                    confidences,
+                    detected_homographies,
+                    sub_w=280,
                     sub_h=220
                 )
                 cv2.imshow("Detected Sub-Windows Grid", grid_img)
                 cv2.setWindowProperty("Detected Sub-Windows Grid", cv2.WND_PROP_TOPMOST, 1)
-                
+
                 key = cv2.waitKey(1) & 0xFF
-                if key == 27 or key == ord('q'): break
+                if key == 27: break  # ESC to quit
+                if not args.debug and key == ord('q'): break
             else:
                 # ถ้ารันโหมดปกติ ไม่แสดงหน้าต่างเพื่อความเร็ว
                 key = cv2.waitKey(1) & 0xFF
                 if key == 27 or key == ord('q'): break
 
-            # 2. ตรวจสอบสัญญาณ Trigger จาก PLC
+            # 2. ตรวจสอบสัญญาณ Trigger (PLC หรือกด 'q' ในโหมด debug)
             trigger_status = plc.read_bit(config['plc']['trigger_device'])
-            
-            if trigger_status[0] == 1 and len(detected_pixels) > 0:
+            manual_trigger = args.debug and key == ord('q')
+
+            if (trigger_status[0] == 1 or manual_trigger) and len(detected_pixels) > 0:
                 print("\n[TRIGGER] Received signal from PLC. Finding best A and B sub-templates...")
                 
                 filtered_pixels = []
