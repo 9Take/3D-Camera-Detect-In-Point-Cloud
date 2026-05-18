@@ -24,24 +24,26 @@ resolution_height = config['camera']['resolution_height']
 def get_params():
     parser = argparse.ArgumentParser(description='Create Template for Heat Exchanger')
     parser.add_argument('-t', '--target', type=str, default=None, help='ชื่อเป้าหมาย (default: A)')
-    # เพิ่มรับพารามิเตอร์ --debug ตรงนี้
     parser.add_argument('--debug', action='store_true', help='เปิดโหมด Debug เพื่อดู 3D Point Cloud')
     args = parser.parse_args()
-    
+
     target_name = args.target
     if target_name is None:
         target_name = input("กรุณาป้อนชื่อเป้าหมาย [A, B, C, etc.]: ").strip()
         if not target_name: target_name = "A"
-        
-    save_dir = config['paths']['template_dir']
-    log_dir = config['paths']['save_dir']
-    
-    os.makedirs(save_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
-    
-    return save_dir, log_dir, target_name, args.debug
 
-SAVE_DIR, LOG_DIR, CURRENT_TARGET_NAME, IS_DEBUG = get_params()
+    template_dir = config['paths']['template_dir']
+    debug_dir = config['paths']['debug_dir']
+
+    target_group = target_name.split('.')[0]
+    target_dir = os.path.join(template_dir, target_group)
+    os.makedirs(target_dir, exist_ok=True)
+    if args.debug:
+        os.makedirs(debug_dir, exist_ok=True)
+
+    return target_dir, debug_dir, target_name, args.debug
+
+TEMPLATE_DIR, DEBUG_DIR, CURRENT_TARGET_NAME, IS_DEBUG = get_params()
 
 app_state = 0 # 0: Live View, 1: Frozen Annotation, 2: Tracking
 polygon_points = []
@@ -136,7 +138,7 @@ def main():
                 else:
                     target_offset = (int(w_rect // 2), int(h_rect // 2))
 
-                cv2.imwrite(os.path.join(SAVE_DIR, f"{CURRENT_TARGET_NAME}_template.png"), template_patch)
+                cv2.imwrite(os.path.join(TEMPLATE_DIR, f"{CURRENT_TARGET_NAME}_template.png"), template_patch)
                 print(f"[SUCCESS] Template Image saved for {CURRENT_TARGET_NAME}")
                 
                 kp_template, des_template = sift.detectAndCompute(template_patch, None)
@@ -239,7 +241,7 @@ def main():
                             "offset_x": int(target_offset[0]),
                             "offset_y": int(target_offset[1])
                         }
-                        with open(os.path.join(SAVE_DIR, f"{CURRENT_TARGET_NAME}_meta.json"), "w") as f:
+                        with open(os.path.join(TEMPLATE_DIR, f"{CURRENT_TARGET_NAME}_meta.json"), "w") as f:
                             json.dump(full_meta, f, indent=4)
                         print(f"[SUCCESS] Saved full metadata to {CURRENT_TARGET_NAME}_meta.json")
 
@@ -247,15 +249,15 @@ def main():
                         if IS_DEBUG:
                             print("[DEBUG] Generating PLY files and showing 3D Alignment...")
                             
-                            # 2. บันทึกไฟล์ .ply (Object และ Marker) ลงใน SAVE_DIR (data/templates)
-                            o3d.io.write_point_cloud(os.path.join(SAVE_DIR, f"{CURRENT_TARGET_NAME}_object.ply"), pcd)
-                            
+                            # 2. บันทึกไฟล์ .ply (Object และ Marker) ลงใน DEBUG_DIR (data/templates/debug)
+                            o3d.io.write_point_cloud(os.path.join(DEBUG_DIR, f"{CURRENT_TARGET_NAME}_object.ply"), pcd)
+
                             point_marker_pcd = o3d.geometry.PointCloud()
                             point_marker_pcd.points = o3d.utility.Vector3dVector([exact_target_pos])
                             point_marker_pcd.colors = o3d.utility.Vector3dVector([[0, 1, 0]])
-                            o3d.io.write_point_cloud(os.path.join(SAVE_DIR, f"{CURRENT_TARGET_NAME}_marker.ply"), point_marker_pcd)
-                            
-                            print(f"[DEBUG] Saved {CURRENT_TARGET_NAME}_object.ply and marker.ply in {SAVE_DIR}")
+                            o3d.io.write_point_cloud(os.path.join(DEBUG_DIR, f"{CURRENT_TARGET_NAME}_marker.ply"), point_marker_pcd)
+
+                            print(f"[DEBUG] Saved {CURRENT_TARGET_NAME}_object.ply and marker.ply in {DEBUG_DIR}")
 
                             # 3. โชว์ 3D 
                             target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.000005)

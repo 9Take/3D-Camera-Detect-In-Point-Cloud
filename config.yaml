@@ -27,6 +27,7 @@ plc:
   registers_per_point: 6
   max_points: 5
 paths:
-  save_dir: data/templates/model
-  template_dir: data/templates/model
+  template_dir: data/templates
+  debug_dir: data/templates/debug
+  save_dir: data/logs
   position_mem: data/logs/position_mem.json

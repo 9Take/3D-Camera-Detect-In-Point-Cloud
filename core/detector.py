@@ -17,17 +17,20 @@ class ObjectDetector:
             print(f"[WARNING] Template directory not found: {template_dir}")
             return templates
 
-        for filename in os.listdir(template_dir):
-            if filename.endswith('_template.png'):
+        for root, dirs, files in os.walk(template_dir):
+            dirs[:] = [d for d in dirs if d != 'debug']  # skip debug artifacts
+            for filename in files:
+                if not filename.endswith('_template.png'):
+                    continue
                 target_name = filename.replace('_template.png', '')
-                
-                img_path = os.path.join(template_dir, filename)
+
+                img_path = os.path.join(root, filename)
                 template_img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                
-                offset = (template_img.shape[1]//2, template_img.shape[0]//2) # default center
-                json_path = os.path.join(template_dir, f"{target_name}_meta.json")
-                txt_path = os.path.join(template_dir, f"{target_name}_offset.txt")
-                
+
+                offset = (template_img.shape[1]//2, template_img.shape[0]//2)
+                json_path = os.path.join(root, f"{target_name}_meta.json")
+                txt_path = os.path.join(root, f"{target_name}_offset.txt")
+
                 if os.path.exists(json_path):
                     with open(json_path, 'r') as f:
                         meta = json.load(f)
