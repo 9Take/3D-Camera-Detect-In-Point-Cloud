@@ -185,8 +185,10 @@ def main():
                 o3d_color = o3d.geometry.Image(color_np_rgb)
                 o3d_depth = o3d.geometry.Image(depth_frame)
                 
+                # ดึงค่าผ่าน Property ที่มีอยู่แล้วในคลาส DepthCamera ได้เลย!
+                depth_scale = cam.depth_scale
+
                 intrinsics = depth_raw_frame.profile.as_video_stream_profile().intrinsics
-                depth_scale = cam.get_depth_scale()
                 
                 rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
                     o3d_color, o3d_depth, depth_scale=1.0/depth_scale, depth_trunc=1.5, convert_rgb_to_intensity=False)
