@@ -21,26 +21,53 @@ config = load_config()
 resolution_width = config['camera']['resolution_width']
 resolution_height = config['camera']['resolution_height']
 
+def _resolve_program(program_arg):
+    """Accept a program number ('1') or name ('ModelA') and return (program_no, program_def)."""
+    programs = config['programs']
+    # numeric lookup
+    try:
+        pno = int(program_arg)
+        if pno in programs: return pno, programs[pno]
+    except ValueError:
+        pass
+    # name lookup
+    for pno, pdef in programs.items():
+        if pdef['name'] == program_arg:
+            return pno, pdef
+    raise SystemExit(f"[ERROR] Program '{program_arg}' not found in config.yaml. "
+                     f"Available: {[(k, v['name']) for k, v in programs.items()]}")
+
+
 def get_params():
     parser = argparse.ArgumentParser(description='Create Template for Heat Exchanger')
-    parser.add_argument('-t', '--target', type=str, default=None, help='ชื่อเป้าหมาย (default: A)')
+    parser.add_argument('-p', '--program', type=str, default=None,
+                        help='Program number or name (e.g. 1 or ModelA)')
+    parser.add_argument('--point', type=str, default=None,
+                        help='Point name within the program (e.g. PointA, PointB)')
+    parser.add_argument('-v', '--variant', type=str, default=None,
+                        help='Variant tag for this template (e.g. 1, 2, front, side)')
     parser.add_argument('--debug', action='store_true', help='เปิดโหมด Debug เพื่อดู 3D Point Cloud')
     args = parser.parse_args()
 
-    target_name = args.target
-    if target_name is None:
-        target_name = input("กรุณาป้อนชื่อเป้าหมาย [A, B, C, etc.]: ").strip()
-        if not target_name: target_name = "A"
+    program_arg = args.program or input("Program (no. or name) [default: 1]: ").strip() or "1"
+    pno, pdef = _resolve_program(program_arg)
 
-    template_dir = config['paths']['template_dir']
-    debug_dir = config['paths']['debug_dir']
+    point_name = args.point or input("Point name [default: PointA]: ").strip() or "PointA"
+    if not point_name.startswith("Point"):
+        point_name = "Point" + point_name  # accept e.g. "A" -> "PointA"
 
-    target_group = target_name.split('.')[0]
-    target_dir = os.path.join(template_dir, target_group)
+    variant = args.variant or input("Variant tag [default: 1]: ").strip() or "1"
+    target_name = f"{point_name}.{variant}"  # used for filenames and meta target_name field
+
+    target_dir = os.path.join(pdef['template_dir'], point_name)
     os.makedirs(target_dir, exist_ok=True)
+
+    debug_dir = config['paths']['debug_dir']
     if args.debug:
         os.makedirs(debug_dir, exist_ok=True)
 
+    print(f"[INIT] Program {pno} ({pdef['name']}) / {point_name} / variant '{variant}'")
+    print(f"[INIT] Saving to: {target_dir}")
     return target_dir, debug_dir, target_name, args.debug
 
 TEMPLATE_DIR, DEBUG_DIR, CURRENT_TARGET_NAME, IS_DEBUG = get_params()

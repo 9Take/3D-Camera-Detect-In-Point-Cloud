@@ -1,33 +1,52 @@
 camera:
   resolution_width: 640
   resolution_height: 480
+
+programs:
+  1:
+    name: ProgramA
+    template_dir: data/templates/ProgramA
+  2:
+    name: ProgramB
+    template_dir: data/templates/ProgramB
+  3:
+    name: ProgramC
+    template_dir: data/templates/ProgramC
+  4:
+    name: ProgramD
+    template_dir: data/templates/ProgramD
+
 plc:
   ip: 192.168.1.165
   port: 5010
-  heartbeat_device: D1010
-  error_device: D1100
-  trigger_device: M1000
-  status_device: M1001
-  point_count_device: D1101
-  targets:
-    A:
-      Input_X: D1001
-      Input_Y: D1002
-      Input_Z: D1003
-      Input_r: D1004
-      Input_p: D1005
-      Input_y: D1006
-    B:
-      Input_X: D1011
-      Input_Y: D1012
-      Input_Z: D1013
-      Input_r: D1014
-      Input_p: D1015
-      Input_y: D1016
-  registers_per_point: 6
-  max_points: 5
+
+  # PLC -> PC (inputs to the vision system)
+  trigger_device:    M1000   # BIT  - start scan
+  program_no_device: D1000   # WORD - which program/model to run
+
+  # PC -> PLC (status outputs)
+  heartbeat_device:    D1010   # WORD - rolling counter
+  error_code_device:   D1100   # WORD
+  status_error_device: M1010   # BIT  - connection / runtime error
+  status_busy_device:  M1011   # BIT  - scan in progress
+  status_ready_device: M1012   # BIT  - idle, ready for next trigger
+  status_complete_device: M1013 # BIT - results written, awaiting ack
+
+  # PC -> PLC (results)
+  # Layout from slot_base_device (shared across all programs):
+  #   base+0..3  = slot1 (X, Y, Z, Conf)
+  #   base+4..7  = slot2 (X, Y, Z, Conf)
+  #   ...
+  amount_device:    D1101   # WORD - number of valid points this cycle
+  slot_base_device: D1110   # WORD - first register of slot data
+  words_per_slot:   4       # X, Y, Z, Conf
+  max_points:       5
+
+  heartbeat_interval_sec: 1.0
+  position_multiplier:    10000  # meters * 10000 -> int16
+  confidence_multiplier:  100    # percent * 100  -> int16
+
 paths:
-  template_dir: data/templates
-  debug_dir: data/templates/debug
-  save_dir: data/logs
+  debug_dir:    data/templates/debug
+  save_dir:     data/logs
   position_mem: data/logs/position_mem.json

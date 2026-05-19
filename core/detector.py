@@ -18,7 +18,10 @@ class ObjectDetector:
             return templates
 
         for root, dirs, files in os.walk(template_dir):
-            dirs[:] = [d for d in dirs if len(d) == 1 and d.isupper()]  # only A/, B/, C/… group folders
+            dirs[:] = [d for d in dirs if d.startswith('Point')]  # only Point*/ folders inside a program
+            point_name = os.path.basename(root)
+            if not point_name.startswith('Point'):
+                continue
             for filename in files:
                 if not filename.endswith('_template.png'):
                     continue
@@ -44,8 +47,8 @@ class ObjectDetector:
 
                 kp, des = self.sift.detectAndCompute(template_img, None)
                 if des is not None and len(des) > 5:
-                    templates[target_name] = {'img': template_img, 'offset': offset, 'kp': kp, 'des': des}
-                    print(f"[CORE] Loaded Template '{target_name}' (Features: {len(kp)})")
+                    templates[target_name] = {'img': template_img, 'offset': offset, 'kp': kp, 'des': des, 'point': point_name}
+                    print(f"[CORE] Loaded Template '{target_name}' under '{point_name}' (Features: {len(kp)})")
         return templates
 
     def detect(self, color_frame, res_width, res_height):
