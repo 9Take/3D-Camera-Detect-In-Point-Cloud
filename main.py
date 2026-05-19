@@ -58,8 +58,7 @@ def set_status(plc, cfg, ready=None, busy=None, complete=None, error=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Heat Exchanger Vision System")
-    parser.add_argument('--debug', action='store_true', help='Show 2D detection + 3D point cloud')
-    parser.add_argument('--show2d', action='store_true', help='Show 2D detection only')
+    parser.add_argument('--debug', action='store_true', help='Also open the 3D point-cloud viewer after each trigger')
     args = parser.parse_args()
 
     config = load_config()
@@ -86,8 +85,9 @@ def main():
     words_per_slot = plc_cfg.get('words_per_slot', 4)
     max_points = plc_cfg.get('max_points', 5)
 
-    # Last program seen — used for debug preview before the first trigger arrives
-    preview_pno = sorted(detectors.keys())[0]
+    # Sticky program number: None until the PLC sends a valid one (or operator
+    # picks one in --debug). Stale PLC reads (0 / unknown) leave it untouched.
+    current_program_no = None
 
     print("\n[SYSTEM READY] Waiting for PLC trigger...")
 
@@ -97,43 +97,68 @@ def main():
             if not ret: continue
             color_frame = np.asanyarray(color_raw.get_data())
 
-            # --- Debug preview (does not write PLC) ----------------------------
-            if args.debug or args.show2d:
-                p_name, p_det = detectors[preview_pno]
+            # --- (1) Poll PLC program no.; sticky if invalid -------------------
+            plc_pno = plc.read_word(plc_cfg['program_no_device'])
+            if plc_pno in detectors:
+                current_program_no = plc_pno
+
+            # --- (2) Live preview: 2D detection + bounding box only -----------
+            main_display = color_frame.copy()
+            if current_program_no is not None:
+                p_name, p_det = detectors[current_program_no]
                 detected_pixels, detected_names, confidences, detected_homographies, _ = p_det.detect(
                     color_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
                 )
                 best = best_per_point(p_det, detected_names, confidences)
 
-                main_display = color_frame.copy()
-                cv2.putText(main_display, f"Program {preview_pno}: {p_name}", (10, 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                for g_idx, point in enumerate(sorted(best)):
+                cv2.putText(main_display,
+                            f"Program {current_program_no}: {p_name}",
+                            (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                for point in sorted(best):
                     entry = best[point]
                     pixel = detected_pixels[entry['idx']]
-                    cv2.circle(main_display, pixel, 8, (0, 255, 0), -1)
-                    cv2.putText(main_display, f"BEST {point}: {entry['name']} ({entry['conf']:.1f}%)",
+                    homo  = detected_homographies[entry['idx']]
+                    cv2.polylines(main_display, [np.int32(homo)], True, (0, 255, 0), 2, cv2.LINE_AA)
+                    cv2.circle(main_display, pixel, 6, (0, 0, 255), -1)
+                    cv2.putText(main_display, f"{point}: {entry['name']} ({entry['conf']:.1f}%)",
                                 (pixel[0] - 40, pixel[1] - 15),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-                window_title = "Vision System - Main [1-9=Trigger Program | ESC=Quit]" if args.debug else "2D Detection"
-                cv2.imshow(window_title, main_display)
-                grid_img = p_det.build_sub_window_grid(color_frame, detected_pixels, detected_names,
-                                                      confidences, detected_homographies)
-                cv2.imshow("Detected Sub-Windows Grid", grid_img)
-                cv2.setWindowProperty("Detected Sub-Windows Grid", cv2.WND_PROP_TOPMOST, 1)
-                key = cv2.waitKey(1) & 0xFF
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
             else:
-                key = cv2.waitKey(1) & 0xFF
+                cv2.putText(main_display, "WAITING for Program No. from PLC", (10, 28),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+
+            hint = ("[t=Trigger | 1-9=Set Program | p=3D view | ESC/q=Quit]"
+                    if args.debug else "[p=3D view | ESC/q=Quit]")
+            cv2.putText(main_display, hint, (10, color_frame.shape[0] - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            cv2.imshow("Vision System - Live", main_display)
+            key = cv2.waitKey(1) & 0xFF
             if key == 27 or key == ord('q'):
                 break
 
-            # --- Trigger check -------------------------------------------------
+            # 'p' opens the 3D viewer for the most recent trigger's geometries
+            if key == ord('p'):
+                if getattr(transformer, "_last_geometries", None):
+                    print("[VIEW] Showing 3D point cloud — close window to continue.")
+                    transformer.show_collected_3d()
+                else:
+                    print("[VIEW] No trigger has run yet; nothing to show.")
+
+            # --- Debug-only keyboard: set program (1-9) and manual trigger (t) -
+            manual_trigger = False
+            if args.debug:
+                if ord('1') <= key <= ord('9'):
+                    n = key - ord('0')
+                    if n in detectors:
+                        current_program_no = n
+                        print(f"[DEBUG] Program No. set to {n} ({detectors[n][0]})")
+                    else:
+                        print(f"[DEBUG] No detector for program {n}; ignored")
+                elif key == ord('t'):
+                    manual_trigger = True
+
+            # --- (3) Trigger check --------------------------------------------
             trigger_bit = plc.read_bit(plc_cfg['trigger_device'])[0]
-            manual_program = None
-            if args.debug and ord('1') <= key <= ord('9'):
-                manual_program = key - ord('0')
-            manual_trigger = manual_program is not None
             if not (trigger_bit == 1 or manual_trigger):
                 continue
 
@@ -141,17 +166,15 @@ def main():
             set_status(plc, plc_cfg, ready=0, busy=1, complete=0, error=0)
             plc.write_word(plc_cfg['error_code_device'], ERR_OK)
 
-            program_no = manual_program if manual_trigger else plc.read_word(plc_cfg['program_no_device'])
-            print(f"\n[TRIGGER] Program No. = {program_no}{'  (manual)' if manual_trigger else ''}")
-
-            if program_no not in detectors:
-                print(f"[ERROR] Unknown program {program_no}")
+            program_no = current_program_no
+            if program_no is None or program_no not in detectors:
+                print(f"[ERROR] Cannot scan: program no. is {program_no}")
                 plc.write_word(plc_cfg['error_code_device'], ERR_INVALID_PROGRAM)
                 set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
                 _wait_trigger_low(plc, plc_cfg)
                 continue
 
-            preview_pno = program_no
+            print(f"\n[TRIGGER] Program No. = {program_no}{'  (manual)' if manual_trigger else ''}")
             prog_name, detector = detectors[program_no]
             print(f"[RUN] Using program '{prog_name}'")
 
@@ -164,10 +187,20 @@ def main():
                 continue
             scan_frame = np.asanyarray(color_raw.get_data())
 
-            detected_pixels, detected_names, confidences, _, _ = detector.detect(
+            detected_pixels, detected_names, confidences, detected_homos, _ = detector.detect(
                 scan_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
             )
             best = best_per_point(detector, detected_names, confidences)
+
+            # ---- Trigger result window: one tile per sub-template -----------
+            best_indices = {entry['idx'] for entry in best.values()}
+            result_img = _build_trigger_result_grid(
+                scan_frame, detected_pixels, detected_names, confidences,
+                detected_homos, detector, best_indices,
+                header=f"TRIGGER  Program {program_no} ({prog_name})",
+            )
+            cv2.imshow("Trigger Result", result_img)
+            cv2.waitKey(1)  # repaint immediately
 
             if not best:
                 print("[WARNING] No targets found.")
@@ -245,9 +278,6 @@ def main():
             set_status(plc, plc_cfg, ready=1, complete=0)
             print("[CYCLE] Done. Ready for next trigger.\n")
 
-            if args.debug:
-                print("[DEBUG] Showing 3D viewer — close window to continue.")
-                transformer.show_collected_3d()
 
     except KeyboardInterrupt:
         print("\n[INFO] Exiting program...")
@@ -256,6 +286,68 @@ def main():
         plc.disconnect()
         cam.release()
         cv2.destroyAllWindows()
+
+
+def _build_trigger_result_grid(scan_frame, pixels, names, confs, homos, detector,
+                               best_indices, header="", tile_w=280, tile_h=220,
+                               crop_w=120, crop_h=100, cols=4):
+    """One close-up tile per detected sub-template (PointA.1, PointA.2, ...).
+    Best-per-point tiles get a thick green border + 'BEST' label.
+    """
+    h_frame, w_frame = scan_frame.shape[:2]
+    header_h = 36 if header else 0
+
+    tiles = []
+    for idx, (pixel, name, conf, homo) in enumerate(zip(pixels, names, confs, homos)):
+        px, py = pixel
+        x0 = max(0, px - crop_w); y0 = max(0, py - crop_h)
+        x1 = min(w_frame, px + crop_w); y1 = min(h_frame, py + crop_h)
+        crop = scan_frame[y0:y1, x0:x1].copy()
+        if crop.size == 0:
+            continue
+
+        sx = tile_w / crop.shape[1]
+        sy = tile_h / crop.shape[0]
+        tile = cv2.resize(crop, (tile_w, tile_h))
+
+        local_poly = homo.copy()
+        local_poly[:, 0, 0] = (local_poly[:, 0, 0] - x0) * sx
+        local_poly[:, 0, 1] = (local_poly[:, 0, 1] - y0) * sy
+        is_best = idx in best_indices
+        color = (0, 255, 0) if is_best else (0, 200, 220)
+        thickness = 3 if is_best else 1
+
+        cv2.polylines(tile, [np.int32(local_poly)], True, color, thickness, cv2.LINE_AA)
+        cv2.circle(tile, (int((px - x0) * sx), int((py - y0) * sy)), 5, (0, 0, 255), -1)
+
+        meta = detector.templates_by_target.get(name)
+        point = meta['point'] if meta else "?"
+        title = f"BEST {point}: {name}" if is_best else f"{name}"
+        cv2.putText(tile, title, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+        cv2.putText(tile, f"Conf: {conf:.1f}%", (8, tile_h - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.rectangle(tile, (0, 0), (tile_w - 1, tile_h - 1), color, 2 if is_best else 1)
+        tiles.append(tile)
+
+    if not tiles:
+        canvas = np.zeros((max(tile_h, 80) + header_h, tile_w * cols, 3), dtype=np.uint8)
+        cv2.putText(canvas, "No sub-templates matched.", (15, header_h + 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    else:
+        n = len(tiles)
+        c = min(cols, n)
+        r = (n + c - 1) // c
+        grid = np.zeros((r * tile_h, c * tile_w, 3), dtype=np.uint8)
+        for i, t in enumerate(tiles):
+            rr, cc = i // c, i % c
+            grid[rr * tile_h:(rr + 1) * tile_h, cc * tile_w:(cc + 1) * tile_w] = t
+        canvas = np.zeros((header_h + grid.shape[0], grid.shape[1], 3), dtype=np.uint8)
+        canvas[header_h:, :] = grid
+
+    if header:
+        cv2.putText(canvas, header, (10, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    return canvas
 
 
 def _wait_trigger_low(plc, plc_cfg, timeout_sec=10.0, poll_sec=0.05):
