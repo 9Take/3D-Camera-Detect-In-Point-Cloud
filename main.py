@@ -116,7 +116,7 @@ def main():
                                 (pixel[0] - 40, pixel[1] - 15),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-                window_title = "Vision System - Main [q=Manual Trigger | ESC=Quit]" if args.debug else "2D Detection"
+                window_title = "Vision System - Main [1-9=Trigger Program | ESC=Quit]" if args.debug else "2D Detection"
                 cv2.imshow(window_title, main_display)
                 grid_img = p_det.build_sub_window_grid(color_frame, detected_pixels, detected_names,
                                                       confidences, detected_homographies)
@@ -125,12 +125,15 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
             else:
                 key = cv2.waitKey(1) & 0xFF
-            if key == 27 or (not args.debug and key == ord('q')):
+            if key == 27 or key == ord('q'):
                 break
 
             # --- Trigger check -------------------------------------------------
             trigger_bit = plc.read_bit(plc_cfg['trigger_device'])[0]
-            manual_trigger = args.debug and key == ord('q')
+            manual_program = None
+            if args.debug and ord('1') <= key <= ord('9'):
+                manual_program = key - ord('0')
+            manual_trigger = manual_program is not None
             if not (trigger_bit == 1 or manual_trigger):
                 continue
 
@@ -138,8 +141,8 @@ def main():
             set_status(plc, plc_cfg, ready=0, busy=1, complete=0, error=0)
             plc.write_word(plc_cfg['error_code_device'], ERR_OK)
 
-            program_no = plc.read_word(plc_cfg['program_no_device']) if not manual_trigger else preview_pno
-            print(f"\n[TRIGGER] Program No. = {program_no}")
+            program_no = manual_program if manual_trigger else plc.read_word(plc_cfg['program_no_device'])
+            print(f"\n[TRIGGER] Program No. = {program_no}{'  (manual)' if manual_trigger else ''}")
 
             if program_no not in detectors:
                 print(f"[ERROR] Unknown program {program_no}")
@@ -184,9 +187,10 @@ def main():
                 filtered_points.append(point)
                 print(f"[FILTER] {point} -> {entry['name']} (Conf: {entry['conf']:.2f}%)")
 
+            # show_3d=False so PLC writes & prints happen immediately; PLY still saved in debug
             extracted_6dof = transformer.extract_3d_data(
                 filtered_pixels, filtered_names,
-                show_3d=args.debug, save_ply=args.debug
+                show_3d=False, save_ply=args.debug
             )
 
             if not extracted_6dof:
@@ -213,14 +217,18 @@ def main():
                 if name not in extracted_6dof or slot_idx >= num_targets:
                     continue
                 x, y, z = extracted_6dof[name][0:3]
+                xi = int(round(x * pos_mul))
+                yi = int(round(y * pos_mul))
+                zi = int(round(z * pos_mul))
+                ci = int(round(conf * conf_mul))
                 plc.write_slot(
                     plc_cfg['slot_base_device'], slot_idx, words_per_slot,
-                    [int(round(x * pos_mul)),
-                     int(round(y * pos_mul)),
-                     int(round(z * pos_mul)),
-                     int(round(conf * conf_mul))],
+                    [xi, yi, zi, ci],
                 )
-                print(f"[PLC] slot {slot_idx} ({point}/{name}): X={x:.4f} Y={y:.4f} Z={z:.4f} Conf={conf:.1f}%")
+                print(f"[PLC] slot {slot_idx} ({point}/{name})")
+                print(f"  float : X={x:+.4f}m  Y={y:+.4f}m  Z={z:+.4f}m  Conf={conf:6.2f}%")
+                print(f"  sent  : X={xi:+6d}   Y={yi:+6d}   Z={zi:+6d}   Conf={ci:6d}"
+                      f"   (x{pos_mul} / x{conf_mul})")
                 memory_state["targets"][point] = {
                     "template": name,
                     "X": round(x, 4), "Y": round(y, 4), "Z": round(z, 4),
@@ -236,6 +244,10 @@ def main():
             _wait_trigger_low(plc, plc_cfg)
             set_status(plc, plc_cfg, ready=1, complete=0)
             print("[CYCLE] Done. Ready for next trigger.\n")
+
+            if args.debug:
+                print("[DEBUG] Showing 3D viewer — close window to continue.")
+                transformer.show_collected_3d()
 
     except KeyboardInterrupt:
         print("\n[INFO] Exiting program...")

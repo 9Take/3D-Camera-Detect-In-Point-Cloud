@@ -22,7 +22,7 @@ resolution_width = config['camera']['resolution_width']
 resolution_height = config['camera']['resolution_height']
 
 def _resolve_program(program_arg):
-    """Accept a program number ('1') or name ('ModelA') and return (program_no, program_def)."""
+    """Accept a program number ('1') or name ('ProgramA') and return (program_no, program_def)."""
     programs = config['programs']
     # numeric lookup
     try:
@@ -41,7 +41,7 @@ def _resolve_program(program_arg):
 def get_params():
     parser = argparse.ArgumentParser(description='Create Template for Heat Exchanger')
     parser.add_argument('-p', '--program', type=str, default=None,
-                        help='Program number or name (e.g. 1 or ModelA)')
+                        help='Program number or name (e.g. 1 or ProgramA)')
     parser.add_argument('--point', type=str, default=None,
                         help='Point name within the program (e.g. PointA, PointB)')
     parser.add_argument('-v', '--variant', type=str, default=None,
@@ -62,7 +62,7 @@ def get_params():
     target_dir = os.path.join(pdef['template_dir'], point_name)
     os.makedirs(target_dir, exist_ok=True)
 
-    debug_dir = config['paths']['debug_dir']
+    debug_dir = os.path.join(config['paths']['debug_dir'], pdef['name'], point_name)
     if args.debug:
         os.makedirs(debug_dir, exist_ok=True)
 
