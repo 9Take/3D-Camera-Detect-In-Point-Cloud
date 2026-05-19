@@ -17,17 +17,23 @@ class ObjectDetector:
             print(f"[WARNING] Template directory not found: {template_dir}")
             return templates
 
-        for filename in os.listdir(template_dir):
-            if filename.endswith('_template.png'):
+        for root, dirs, files in os.walk(template_dir):
+            dirs[:] = [d for d in dirs if d.startswith('Point')]  # only Point*/ folders inside a program
+            point_name = os.path.basename(root)
+            if not point_name.startswith('Point'):
+                continue
+            for filename in files:
+                if not filename.endswith('_template.png'):
+                    continue
                 target_name = filename.replace('_template.png', '')
-                
-                img_path = os.path.join(template_dir, filename)
+
+                img_path = os.path.join(root, filename)
                 template_img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                
-                offset = (template_img.shape[1]//2, template_img.shape[0]//2) # default center
-                json_path = os.path.join(template_dir, f"{target_name}_meta.json")
-                txt_path = os.path.join(template_dir, f"{target_name}_offset.txt")
-                
+
+                offset = (template_img.shape[1]//2, template_img.shape[0]//2)
+                json_path = os.path.join(root, f"{target_name}_meta.json")
+                txt_path = os.path.join(root, f"{target_name}_offset.txt")
+
                 if os.path.exists(json_path):
                     with open(json_path, 'r') as f:
                         meta = json.load(f)
@@ -36,11 +42,13 @@ class ObjectDetector:
                     with open(txt_path, 'r') as f:
                         data = f.read().strip().split(',')
                         offset = (int(data[0]), int(data[1]))
+                else:
+                    print(f"[WARNING] No meta.json for '{target_name}' — using image center as offset")
 
                 kp, des = self.sift.detectAndCompute(template_img, None)
                 if des is not None and len(des) > 5:
-                    templates[target_name] = {'img': template_img, 'offset': offset, 'kp': kp, 'des': des}
-                    print(f"[CORE] Loaded Template '{target_name}' (Features: {len(kp)})")
+                    templates[target_name] = {'img': template_img, 'offset': offset, 'kp': kp, 'des': des, 'point': point_name}
+                    print(f"[CORE] Loaded Template '{target_name}' under '{point_name}' (Features: {len(kp)})")
         return templates
 
     def detect(self, color_frame, res_width, res_height):

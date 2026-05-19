@@ -1,0 +1,27 @@
+services:
+  detector:
+    build: .
+    command: python3 main.py
+    network_mode: host
+    privileged: true              # required for RealSense USB access
+    devices:
+      - /dev/bus/usb:/dev/bus/usb # RealSense camera
+    volumes:
+      - ./data:/app/data           # templates (read) + logs (write)
+      - ./config.yaml:/app/config.yaml
+      - /tmp/.X11-unix:/tmp/.X11-unix  # X11 for --debug / --show2d
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    command: >
+      streamlit run Dashboard/UI.py
+      --server.address 0.0.0.0
+      --server.port 8501
+    network_mode: host            # lets dashboard reach PLC on local network
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml
+    restart: unless-stopped

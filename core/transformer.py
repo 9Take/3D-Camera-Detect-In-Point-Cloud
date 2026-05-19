@@ -31,7 +31,7 @@ class PointCloudTransformer:
         o3d_depth = o3d.geometry.Image(depth_np)
         
         intrinsics = depth_raw.profile.as_video_stream_profile().intrinsics
-        depth_scale = self.camera.get_depth_scale()
+        depth_scale = self.camera.depth_scale
         
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             o3d_color, o3d_depth, depth_scale=1.0/depth_scale, depth_trunc=1.5, convert_rgb_to_intensity=False)
@@ -107,24 +107,31 @@ class PointCloudTransformer:
                 except Exception as e:
                     print(f"[ERROR] Could not save .ply: {e}")
 
-            # สร้างกราฟิก 3D (Sphere & Axis) ของตัวนี้
-            if show_3d:
-                target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
-                ball_color = [0, 1, 0] if target_name.startswith('A') else [0, 0.8, 1]
-                target_ball.paint_uniform_color(ball_color)
-                target_ball.translate(exact_target_pos)
-                
-                axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.04, origin=[0,0,0])
-                axis.rotate(rotation_matrix, center=[0,0,0])
-                axis.translate(exact_target_pos)
+            # Always build per-target sphere + axis; cheap, lets show_collected_3d() display them later.
+            target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
+            ball_color = [0, 1, 0] if target_name.startswith('A') else [0, 0.8, 1]
+            target_ball.paint_uniform_color(ball_color)
+            target_ball.translate(exact_target_pos)
 
-                mat_unlit = o3d.visualization.rendering.MaterialRecord()
-                mat_unlit.shader = "defaultUnlit"
+            axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.04, origin=[0,0,0])
+            axis.rotate(rotation_matrix, center=[0,0,0])
+            axis.translate(exact_target_pos)
 
-                geometries_to_draw.append({"name": f"target_{target_name}", "geometry": target_ball, "material": mat_unlit})
-                geometries_to_draw.append({"name": f"axis_{target_name}", "geometry": axis, "material": mat_unlit})
+            mat_unlit = o3d.visualization.rendering.MaterialRecord()
+            mat_unlit.shader = "defaultUnlit"
 
-        if show_3d and len(geometries_to_draw) > 1:
-            o3d.visualization.draw(geometries_to_draw, title="All Targets 6-DOF Detection Grid")
-            
+            geometries_to_draw.append({"name": f"target_{target_name}", "geometry": target_ball, "material": mat_unlit})
+            geometries_to_draw.append({"name": f"axis_{target_name}", "geometry": axis, "material": mat_unlit})
+
+        # Stash geometries for an optional later show_collected_3d() call (non-blocking here).
+        self._last_geometries = geometries_to_draw if len(geometries_to_draw) > 1 else None
+
+        if show_3d and self._last_geometries:
+            o3d.visualization.draw(self._last_geometries, title="All Targets 6-DOF Detection Grid")
+
         return extracted_6dof
+
+    def show_collected_3d(self, title="All Targets 6-DOF Detection Grid"):
+        """Display the geometries captured by the most recent extract_3d_data() call. Blocks until window closes."""
+        if getattr(self, "_last_geometries", None):
+            o3d.visualization.draw(self._last_geometries, title=title)
