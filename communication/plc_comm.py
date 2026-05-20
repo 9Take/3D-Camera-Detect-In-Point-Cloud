@@ -29,6 +29,7 @@ class PLCCommunicator:
         self._lock = threading.Lock()
         self._hb_thread = None
         self._hb_stop = threading.Event()
+        self.heartbeat_counter = 0
 
     def connect(self):
         try:
@@ -106,6 +107,7 @@ class PLCCommunicator:
             counter = 0
             while not self._hb_stop.is_set():
                 counter = (counter + 1) % 32760
+                self.heartbeat_counter = counter
                 self.write_word(device, counter)
                 self._hb_stop.wait(interval_sec)
 

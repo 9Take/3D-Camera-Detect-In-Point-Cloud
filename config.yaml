@@ -21,24 +21,24 @@ plc:
   port: 5010
 
   # PLC -> PC (inputs to the vision system)
-  trigger_device:    M1000   # BIT  - start scan
-  program_no_device: D1000   # WORD - which program/model to run
+  trigger_device:    Y1000   # BIT  - start scan
+  program_no_device: D1100   # WORD - which program/model to run
 
   # PC -> PLC (status outputs)
-  heartbeat_device:    D1010   # WORD - rolling counter
-  error_code_device:   D1100   # WORD
-  status_error_device: M1010   # BIT  - connection / runtime error
-  status_busy_device:  M1011   # BIT  - scan in progress
-  status_ready_device: M1012   # BIT  - idle, ready for next trigger
-  status_complete_device: M1013 # BIT - results written, awaiting ack
+  heartbeat_device:    D1000   # WORD - rolling counter
+  error_code_device:   D1001   # WORD
+  status_error_device: X1001   # BIT  - connection / runtime error
+  status_busy_device:  X1002   # BIT  - scan in progress
+  status_ready_device: X1000   # BIT  - idle, ready for next trigger
+  status_complete_device: X1003 # BIT - results written, awaiting ack
 
   # PC -> PLC (results)
   # Layout from slot_base_device (shared across all programs):
   #   base+0..3  = slot1 (X, Y, Z, Conf)
   #   base+4..7  = slot2 (X, Y, Z, Conf)
   #   ...
-  amount_device:    D1101   # WORD - number of valid points this cycle
-  slot_base_device: D1110   # WORD - first register of slot data
+  amount_device:    D1002   # WORD - number of valid points this cycle
+  slot_base_device: D1003   # WORD - first register of slot data
   words_per_slot:   4       # X, Y, Z, Conf
   max_points:       5
 

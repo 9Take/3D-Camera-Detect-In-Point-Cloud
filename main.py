@@ -1,4 +1,5 @@
 import cv2
+import sys
 import time
 import yaml
 import json
@@ -132,6 +133,15 @@ def main():
             cv2.putText(main_display, hint, (10, color_frame.shape[0] - 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
             cv2.imshow("Vision System - Live", main_display)
+
+            prog_label = (f"P{current_program_no}:{detectors[current_program_no][0]}"
+                          if current_program_no is not None else "P?:waiting")
+            sys.stdout.write(
+                f"\r[HB {plc.heartbeat_counter:5d}] {prog_label}  "
+                f"waiting for trigger... "
+            )
+            sys.stdout.flush()
+
             key = cv2.waitKey(1) & 0xFF
             if key == 27 or key == ord('q'):
                 break
@@ -168,7 +178,7 @@ def main():
 
             program_no = current_program_no
             if program_no is None or program_no not in detectors:
-                print(f"[ERROR] Cannot scan: program no. is {program_no}")
+                print(f"\n[ERROR] Cannot scan: program no. is {program_no}")
                 plc.write_word(plc_cfg['error_code_device'], ERR_INVALID_PROGRAM)
                 set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
                 _wait_trigger_low(plc, plc_cfg)
@@ -203,7 +213,7 @@ def main():
             cv2.waitKey(1)  # repaint immediately
 
             if not best:
-                print("[WARNING] No targets found.")
+                print("\n[WARNING] No targets found.")
                 plc.write_word(plc_cfg['amount_device'], 0)
                 plc.write_word(plc_cfg['error_code_device'], ERR_NO_TARGETS)
                 set_status(plc, plc_cfg, busy=0, complete=1, error=1)
