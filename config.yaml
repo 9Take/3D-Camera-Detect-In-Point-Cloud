@@ -21,16 +21,20 @@ plc:
   port: 5010
 
   # PLC -> PC (inputs to the vision system)
-  trigger_device:    Y1000   # BIT  - start scan
+  trigger_device:    M1500   # BIT  - start scan
   program_no_device: D1100   # WORD - which program/model to run
+
+  # PC -> PLC (debug-only PLC-side test registers; written from 'b' test mode)
+  program_no_test_device: D1500   # WORD - PC writes selected program no. here
+  # trigger_test_device:    M1500   # BIT  - PC pulses this to test PLC trigger logic
 
   # PC -> PLC (status outputs)
   heartbeat_device:    D1000   # WORD - rolling counter
   error_code_device:   D1001   # WORD
-  status_error_device: X1001   # BIT  - connection / runtime error
-  status_busy_device:  X1002   # BIT  - scan in progress
-  status_ready_device: X1000   # BIT  - idle, ready for next trigger
-  status_complete_device: X1003 # BIT - results written, awaiting ack
+  status_error_device: M1001   # BIT  - connection / runtime error
+  status_busy_device:  M1002   # BIT  - scan in progress
+  status_ready_device: M1000   # BIT  - idle, ready for next trigger
+  status_complete_device: M1003 # BIT - results written, awaiting ack
 
   # PC -> PLC (results)
   # Layout from slot_base_device (shared across all programs):

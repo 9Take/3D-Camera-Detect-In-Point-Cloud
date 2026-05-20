@@ -90,6 +90,10 @@ def main():
     # picks one in --debug). Stale PLC reads (0 / unknown) leave it untouched.
     current_program_no = None
 
+    # Debug-only PLC-test sub-mode: 'b' toggles; while active, 1-9 writes to
+    # program_no_test_device and 't' pulses trigger_test_device.
+    plc_test_mode = False
+
     print("\n[SYSTEM READY] Waiting for PLC trigger...")
 
     try:
@@ -99,9 +103,12 @@ def main():
             color_frame = np.asanyarray(color_raw.get_data())
 
             # --- (1) Poll PLC program no.; sticky if invalid -------------------
-            plc_pno = plc.read_word(plc_cfg['program_no_device'])
-            if plc_pno in detectors:
-                current_program_no = plc_pno
+            # In debug mode without PLC-test, keyboard owns current_program_no
+            # (otherwise the PLC poll would overwrite manual 1-9 presses each frame).
+            if not args.debug or plc_test_mode:
+                plc_pno = plc.read_word(plc_cfg['program_no_device'])
+                if plc_pno in detectors:
+                    current_program_no = plc_pno
 
             # --- (2) Live preview: 2D detection + bounding box only -----------
             main_display = color_frame.copy()
@@ -128,16 +135,26 @@ def main():
                 cv2.putText(main_display, "WAITING for Program No. from PLC", (10, 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
 
-            hint = ("[t=Trigger | 1-9=Set Program | p=3D view | ESC/q=Quit]"
-                    if args.debug else "[p=3D view | ESC/q=Quit]")
+            if args.debug:
+                if plc_test_mode:
+                    hint = "[PLC TEST: 1-9=write D1500 | t=pulse M1500 | b=exit test | p=3D | ESC/q=Quit]"
+                else:
+                    hint = "[t=Trigger | 1-9=Set Program | b=PLC test | p=3D view | ESC/q=Quit]"
+            else:
+                hint = "[p=3D view | ESC/q=Quit]"
             cv2.putText(main_display, hint, (10, color_frame.shape[0] - 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            if args.debug and plc_test_mode:
+                cv2.putText(main_display, "PLC TEST MODE",
+                            (color_frame.shape[1] - 230, 28),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
             cv2.imshow("Vision System - Live", main_display)
 
             prog_label = (f"P{current_program_no}:{detectors[current_program_no][0]}"
                           if current_program_no is not None else "P?:waiting")
+            mode_label = "PLC-TEST " if (args.debug and plc_test_mode) else ""
             sys.stdout.write(
-                f"\r[HB {plc.heartbeat_counter:5d}] {prog_label}  "
+                f"\r[HB {plc.heartbeat_counter:5d}] {mode_label}{prog_label}  "
                 f"waiting for trigger... "
             )
             sys.stdout.flush()
@@ -155,17 +172,33 @@ def main():
                     print("[VIEW] No trigger has run yet; nothing to show.")
 
             # --- Debug-only keyboard: set program (1-9) and manual trigger (t) -
+            # In PLC-test sub-mode ('b'), 1-9 writes program_no_test_device and
+            # 't' pulses trigger_test_device instead of affecting the scan flow.
             manual_trigger = False
             if args.debug:
-                if ord('1') <= key <= ord('9'):
+                if key == ord('b'):
+                    plc_test_mode = not plc_test_mode
+                    if not plc_test_mode:
+                        plc.write_bit(plc_cfg['trigger_test_device'], 0)
+                    print(f"\n[DEBUG] PLC test mode {'ON' if plc_test_mode else 'OFF'}")
+                elif ord('1') <= key <= ord('9'):
                     n = key - ord('0')
-                    if n in detectors:
+                    if plc_test_mode:
+                        plc.write_word(plc_cfg['program_no_test_device'], n)
+                        print(f"\n[PLC-TEST] Wrote program no. {n} -> {plc_cfg['program_no_test_device']}")
+                    elif n in detectors:
                         current_program_no = n
-                        print(f"[DEBUG] Program No. set to {n} ({detectors[n][0]})")
+                        print(f"\n[DEBUG] Program No. set to {n} ({detectors[n][0]})")
                     else:
-                        print(f"[DEBUG] No detector for program {n}; ignored")
+                        print(f"\n[DEBUG] No detector for program {n}; ignored")
                 elif key == ord('t'):
-                    manual_trigger = True
+                    if plc_test_mode:
+                        plc.write_bit(plc_cfg['trigger_test_device'], 1)
+                        time.sleep(0.1)
+                        plc.write_bit(plc_cfg['trigger_test_device'], 0)
+                        print(f"\n[PLC-TEST] Pulsed {plc_cfg['trigger_test_device']}")
+                    else:
+                        manual_trigger = True
 
             # --- (3) Trigger check --------------------------------------------
             trigger_bit = plc.read_bit(plc_cfg['trigger_device'])[0]
