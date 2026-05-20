@@ -2,7 +2,6 @@ import math
 import numpy as np
 import open3d as o3d
 import cv2
-import os
 
 def rotation_matrix_to_euler_angles(R):
     sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
@@ -14,13 +13,12 @@ def rotation_matrix_to_euler_angles(R):
     return [x, y, z]
 
 class PointCloudTransformer:
-    def __init__(self, camera, res_width, res_height, save_dir):
+    def __init__(self, camera, res_width, res_height):
         self.camera = camera
         self.res_width = res_width
         self.res_height = res_height
-        self.save_dir = save_dir
 
-    def extract_3d_data(self, target_pixels, target_names, show_3d=True, save_ply=False):
+    def extract_3d_data(self, target_pixels, target_names, show_3d=True):
         ret, depth_raw, color_raw = self.camera.get_raw_frame()
         if not ret: return {}
 
@@ -97,15 +95,6 @@ class PointCloudTransformer:
             roll, pitch, yaw = rotation_matrix_to_euler_angles(rotation_matrix)
             
             extracted_6dof[target_name] = [target_x, -target_y, -target_z, roll, pitch, yaw]
-
-            # --- บันทึกไฟล์ .ply เฉพาะกรณีที่เปิดการตั้งค่า save_ply เท่านั้น ---
-            if save_ply:
-                try:
-                    ply_path = os.path.join(self.save_dir, f"{target_name}_scene.ply")
-                    o3d.io.write_point_cloud(ply_path, pcd)
-                    print(f"[TRANSFORMER] Saved Point Cloud to {ply_path}")
-                except Exception as e:
-                    print(f"[ERROR] Could not save .ply: {e}")
 
             # Always build per-target sphere + axis; cheap, lets show_collected_3d() display them later.
             target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)

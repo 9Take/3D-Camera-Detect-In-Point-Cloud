@@ -70,8 +70,7 @@ def main():
     cam = DepthCamera(config['camera']['resolution_width'], config['camera']['resolution_height'])
     detectors = load_detectors(config['programs'])
     transformer = PointCloudTransformer(cam, config['camera']['resolution_width'],
-                                        config['camera']['resolution_height'],
-                                        config['paths']['save_dir'])
+                                        config['camera']['resolution_height'])
 
     plc = PLCCommunicator(plc_cfg['ip'], plc_cfg['port'])
     plc.connect()
@@ -263,10 +262,10 @@ def main():
                 filtered_points.append(point)
                 print(f"[FILTER] {point} -> {entry['name']} (Conf: {entry['conf']:.2f}%)")
 
-            # show_3d=False so PLC writes & prints happen immediately; PLY still saved in debug
+            # show_3d=False so PLC writes & prints happen immediately
             extracted_6dof = transformer.extract_3d_data(
                 filtered_pixels, filtered_names,
-                show_3d=False, save_ply=args.debug
+                show_3d=False,
             )
 
             if not extracted_6dof:
