@@ -93,6 +93,35 @@ class PLCCommunicator:
         except Exception as e:
             print(f"[PLC ERROR] Write Words {device} (n={len(values)}) Failed: {e}")
 
+    def read_words(self, device, count):
+        """Read `count` consecutive words starting at `device` in a single request."""
+        if not self.connected or count <= 0: return [0] * max(count, 0)
+        try:
+            with self._lock:
+                return self.plc.batchread_wordunits(device, count)
+        except Exception as e:
+            print(f"[PLC ERROR] Read Words {device} (n={count}) Failed: {e}")
+            return [0] * count
+
+    def read_bits(self, device, count):
+        """Read `count` consecutive bits starting at `device` in a single request."""
+        if not self.connected or count <= 0: return [0] * max(count, 0)
+        try:
+            with self._lock:
+                return self.plc.batchread_bitunits(device, count)
+        except Exception as e:
+            print(f"[PLC ERROR] Read Bits {device} (n={count}) Failed: {e}")
+            return [0] * count
+
+    def write_bits(self, device, values):
+        """Write a consecutive block of bits starting at `device`."""
+        if not self.connected or not values: return
+        try:
+            with self._lock:
+                self.plc.batchwrite_bitunits(device, [int(bool(v)) for v in values])
+        except Exception as e:
+            print(f"[PLC ERROR] Write Bits {device} (n={len(values)}) Failed: {e}")
+
     def write_scaled_word(self, device, float_val, multiplier=1000):
         self.write_word(device, int(round(float_val * multiplier)))
 
