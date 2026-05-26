@@ -20,6 +20,9 @@ ERR_NO_TARGETS = 2
 ERR_CAMERA = 3
 ERR_INTERNAL = 99
 
+# How long to hold complete=1 after the PLC ack so HMI scan can latch the signal.
+COMPLETE_PULSE_SEC = 1.0
+
 
 def load_config():
     with open("config.yaml", "r") as f:
@@ -50,11 +53,23 @@ def best_per_point(detector, detected_names, confidences):
     return best
 
 
+# Status bits are written together in one packet to cut PLC load (4 packets -> 1).
+# Assumes status devices are consecutive in order: ready, error, busy, complete
+# (e.g. M1000, M1001, M1002, M1003). Cache holds last-written values so partial
+# updates don't need an extra read.
+_last_status = {'ready': 0, 'error': 0, 'busy': 0, 'complete': 0}
+
 def set_status(plc, cfg, ready=None, busy=None, complete=None, error=None):
-    if ready    is not None: plc.write_bit(cfg['status_ready_device'],    ready)
-    if busy     is not None: plc.write_bit(cfg['status_busy_device'],     busy)
-    if complete is not None: plc.write_bit(cfg['status_complete_device'], complete)
-    if error    is not None: plc.write_bit(cfg['status_error_device'],    error)
+    if ready    is not None: _last_status['ready']    = int(bool(ready))
+    if busy     is not None: _last_status['busy']     = int(bool(busy))
+    if complete is not None: _last_status['complete'] = int(bool(complete))
+    if error    is not None: _last_status['error']    = int(bool(error))
+    ok = plc.write_bits(cfg['status_ready_device'],
+                        [_last_status['ready'], _last_status['error'],
+                         _last_status['busy'],  _last_status['complete']])
+    if not ok:
+        print(f"[STATUS WARN] Failed to push status to PLC: {_last_status}")
+    return ok
 
 
 def main():
@@ -95,6 +110,11 @@ def main():
 
     print("\n[SYSTEM READY] Waiting for PLC trigger...")
 
+    # Throttle PLC polling independent of camera FPS to limit packet rate.
+    plc_poll_interval = plc_cfg.get('poll_interval_sec', 0.1)  # 10 Hz default
+    last_plc_poll = 0.0
+    trigger_bit = 0
+
     try:
         while True:
             ret, depth_raw, color_raw = cam.get_raw_frame()
@@ -104,7 +124,8 @@ def main():
             # --- (1) Poll PLC program no.; sticky if invalid -------------------
             # In debug mode without PLC-test, keyboard owns current_program_no
             # (otherwise the PLC poll would overwrite manual 1-9 presses each frame).
-            if not args.debug or plc_test_mode:
+            poll_plc_now = (time.time() - last_plc_poll) >= plc_poll_interval
+            if poll_plc_now and (not args.debug or plc_test_mode):
                 plc_pno = plc.read_word(plc_cfg['program_no_device'])
                 if plc_pno in detectors:
                     current_program_no = plc_pno
@@ -200,9 +221,14 @@ def main():
                         manual_trigger = True
 
             # --- (3) Trigger check --------------------------------------------
-            trigger_bit = plc.read_bit(plc_cfg['trigger_device'])[0]
+            if poll_plc_now:
+                trigger_bit = plc.read_bit(plc_cfg['trigger_device'])[0]
+                last_plc_poll = time.time()
             if not (trigger_bit == 1 or manual_trigger):
                 continue
+            # Consume the trigger so a stale cache doesn't re-enter the cycle.
+            # PLC must re-assert (and we must re-poll) for the next iteration.
+            trigger_bit = 0
 
             # ---- Cycle start ----
             set_status(plc, plc_cfg, ready=0, busy=1, complete=0, error=0)
@@ -248,8 +274,9 @@ def main():
                 print("\n[WARNING] No targets found.")
                 plc.write_word(plc_cfg['amount_device'], 0)
                 plc.write_word(plc_cfg['error_code_device'], ERR_NO_TARGETS)
-                set_status(plc, plc_cfg, busy=0, complete=1, error=1)
-                _wait_trigger_low(plc, plc_cfg)
+                if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
+                    _wait_trigger_low(plc, plc_cfg)
+                time.sleep(COMPLETE_PULSE_SEC)  # hold complete=1 long enough for HMI
                 set_status(plc, plc_cfg, ready=1, complete=0, error=0)
                 continue
 
@@ -271,8 +298,9 @@ def main():
             if not extracted_6dof:
                 plc.write_word(plc_cfg['amount_device'], 0)
                 plc.write_word(plc_cfg['error_code_device'], ERR_NO_TARGETS)
-                set_status(plc, plc_cfg, busy=0, complete=1, error=1)
-                _wait_trigger_low(plc, plc_cfg)
+                if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
+                    _wait_trigger_low(plc, plc_cfg)
+                time.sleep(COMPLETE_PULSE_SEC)  # hold complete=1 long enough for HMI
                 set_status(plc, plc_cfg, ready=1, complete=0, error=0)
                 continue
 
@@ -315,8 +343,9 @@ def main():
                 json.dump(memory_state, f, indent=4)
 
             print(f"[PLC] Wrote {num_targets} slot(s).")
-            set_status(plc, plc_cfg, busy=0, complete=1, error=0)
-            _wait_trigger_low(plc, plc_cfg)
+            if set_status(plc, plc_cfg, busy=0, complete=1, error=0):
+                _wait_trigger_low(plc, plc_cfg)
+            time.sleep(COMPLETE_PULSE_SEC)  # hold complete=1 long enough for HMI
             set_status(plc, plc_cfg, ready=1, complete=0)
             print("[CYCLE] Done. Ready for next trigger.\n")
 
@@ -392,7 +421,7 @@ def _build_trigger_result_grid(scan_frame, pixels, names, confs, homos, detector
     return canvas
 
 
-def _wait_trigger_low(plc, plc_cfg, timeout_sec=10.0, poll_sec=0.05):
+def _wait_trigger_low(plc, plc_cfg, timeout_sec=10.0, poll_sec=0.1):
     """Block until the PLC clears its trigger bit (handshake) or timeout."""
     start = time.time()
     while time.time() - start < timeout_sec:
