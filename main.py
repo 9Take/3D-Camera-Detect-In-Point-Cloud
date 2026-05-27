@@ -11,6 +11,7 @@ from communication.realsense import DepthCamera
 from communication.plc_comm import PLCCommunicator
 from core.detector import ObjectDetector
 from core.transformer import PointCloudTransformer
+from core.aruco_reference import ArucoReference
 
 
 # Error codes written to plc.error_code_device
@@ -18,6 +19,7 @@ ERR_OK = 0
 ERR_INVALID_PROGRAM = 1
 ERR_NO_TARGETS = 2
 ERR_CAMERA = 3
+ERR_NO_REFERENCE = 4
 ERR_INTERNAL = 99
 
 # How long to hold complete=1 after the PLC ack so HMI scan can latch the signal.
@@ -87,6 +89,17 @@ def main():
     transformer = PointCloudTransformer(cam, config['camera']['resolution_width'],
                                         config['camera']['resolution_height'])
 
+    aruco_ref = None
+    aruco_cfg = config.get('aruco', {})
+    if aruco_cfg.get('enabled', False):
+        cam_K, cam_d = cam.get_color_intrinsics()
+        aruco_ref = ArucoReference(
+            cam_K, cam_d,
+            aruco_cfg['marker_length'],
+            aruco_cfg.get('dictionary', 'DICT_6X6_250'),
+        )
+        print(f"[INIT] ArUco reference enabled (marker {aruco_cfg['marker_length']} m)")
+
     plc = PLCCommunicator(plc_cfg['ip'], plc_cfg['port'])
     plc.connect()
     plc.start_heartbeat(plc_cfg['heartbeat_device'], plc_cfg.get('heartbeat_interval_sec', 1.0))
@@ -154,6 +167,20 @@ def main():
             else:
                 cv2.putText(main_display, "WAITING for Program No. from PLC", (10, 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+
+            if aruco_ref is not None:
+                live_pose = aruco_ref.draw_overlay(main_display)
+                if live_pose is None:
+                    cv2.putText(main_display, "ArUco: NOT DETECTED",
+                                (10, main_display.shape[0] - 32),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+                else:
+                    _, t, mid = live_pose
+                    tx, ty, tz = t.flatten()
+                    cv2.putText(main_display,
+                                f"ArUco id={mid}  t=({tx:+.3f},{ty:+.3f},{tz:+.3f}) m",
+                                (10, main_display.shape[0] - 32),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
 
             if args.debug:
                 if plc_test_mode:
@@ -304,6 +331,38 @@ def main():
                 set_status(plc, plc_cfg, ready=1, complete=0, error=0)
                 continue
 
+            # Detect ArUco on this trigger's frame to use the marker as the
+            # world origin. Output XYZ below is expressed in the marker frame.
+            aruco_pose = None
+            if aruco_ref is not None:
+                aruco_pose = aruco_ref.detect_pose(scan_frame)
+                if aruco_pose is None:
+                    print("\n[ERROR] ArUco reference marker not visible.")
+                    plc.write_word(plc_cfg['amount_device'], 0)
+                    plc.write_word(plc_cfg['error_code_device'], ERR_NO_REFERENCE)
+                    if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
+                        _wait_trigger_low(plc, plc_cfg)
+                    time.sleep(COMPLETE_PULSE_SEC)
+                    set_status(plc, plc_cfg, ready=1, complete=0, error=0)
+                    continue
+                rvec, tvec, marker_id = aruco_pose
+                R_cv, _ = cv2.Rodrigues(rvec)
+                tx, ty, tz = tvec.flatten()
+                sy = (R_cv[0, 0] ** 2 + R_cv[1, 0] ** 2) ** 0.5
+                if sy > 1e-6:
+                    roll  = np.degrees(np.arctan2( R_cv[2, 1], R_cv[2, 2]))
+                    pitch = np.degrees(np.arctan2(-R_cv[2, 0], sy))
+                    yaw   = np.degrees(np.arctan2( R_cv[1, 0], R_cv[0, 0]))
+                else:
+                    roll  = np.degrees(np.arctan2(-R_cv[1, 2], R_cv[1, 1]))
+                    pitch = np.degrees(np.arctan2(-R_cv[2, 0], sy))
+                    yaw   = 0.0
+                print(f"[ARUCO POSE] id={marker_id}  "
+                      f"pos=({tx:+.4f}, {ty:+.4f}, {tz:+.4f}) m  "
+                      f"rot=(roll={roll:+.2f}, pitch={pitch:+.2f}, yaw={yaw:+.2f}) deg "
+                      f"(in camera frame)")
+                transformer.re_express_in_marker_frame(rvec, tvec)
+
             # Write results: amount + per-slot (X, Y, Z, Conf)
             num_targets = min(len(extracted_6dof), max_points)
             plc.write_word(plc_cfg['amount_device'], num_targets)
@@ -320,6 +379,11 @@ def main():
                 if name not in extracted_6dof or slot_idx >= num_targets:
                     continue
                 x, y, z = extracted_6dof[name][0:3]
+                if aruco_pose is not None:
+                    rvec, tvec, _ = aruco_pose
+                    x, y, z = aruco_ref.transform_from_transformer_frame(
+                        (x, y, z), rvec, tvec
+                    )
                 xi = int(round(x * pos_mul))
                 yi = int(round(y * pos_mul))
                 zi = int(round(z * pos_mul))

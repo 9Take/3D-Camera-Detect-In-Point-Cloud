@@ -57,5 +57,16 @@ class DepthCamera:
             
         return True, depth_frame, color_frame
 
+    def get_color_intrinsics(self):
+        """Returns (camera_matrix, dist_coeffs) for the color stream."""
+        profile = self.pipeline.get_active_profile()
+        color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
+        intr = color_stream.get_intrinsics()
+        camera_matrix = np.array([[intr.fx, 0, intr.ppx],
+                                  [0, intr.fy, intr.ppy],
+                                  [0, 0, 1]], dtype=np.float64)
+        dist_coeffs = np.array(intr.coeffs, dtype=np.float64)
+        return camera_matrix, dist_coeffs
+
     def release(self):
         self.pipeline.stop()

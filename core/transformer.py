@@ -120,6 +120,30 @@ class PointCloudTransformer:
 
         return extracted_6dof
 
+    def re_express_in_marker_frame(self, rvec, tvec, size=0.08):
+        """Move the whole scene so the ArUco marker is the world origin.
+        Applies the camera->marker transform to every stashed geometry, then
+        adds a coordinate frame at the new origin (the marker itself)."""
+        if not getattr(self, "_last_geometries", None):
+            return
+        R_cv, _ = cv2.Rodrigues(np.asarray(rvec, dtype=np.float64))
+        t = np.asarray(tvec, dtype=np.float64).flatten()
+        F = np.diag([1.0, -1.0, -1.0])  # flipped viewer world <-> OpenCV camera
+        # geometries currently live in flipped viewer world.
+        # p_marker = R_cv^T (F @ p_world - t)
+        T = np.eye(4)
+        T[:3, :3] = R_cv.T @ F
+        T[:3, 3]  = -R_cv.T @ t
+
+        self._last_geometries = [g for g in self._last_geometries if g["name"] != "aruco_frame"]
+        for g in self._last_geometries:
+            g["geometry"].transform(T)
+
+        origin_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=size, origin=[0, 0, 0])
+        mat = o3d.visualization.rendering.MaterialRecord()
+        mat.shader = "defaultUnlit"
+        self._last_geometries.append({"name": "aruco_frame", "geometry": origin_frame, "material": mat})
+
     def show_collected_3d(self, title="All Targets 6-DOF Detection Grid"):
         """Display the geometries captured by the most recent extract_3d_data() call. Blocks until window closes."""
         if getattr(self, "_last_geometries", None):

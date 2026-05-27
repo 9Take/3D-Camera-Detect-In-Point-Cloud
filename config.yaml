@@ -2,6 +2,11 @@ camera:
   resolution_width: 640
   resolution_height: 480
 
+aruco:
+  enabled: true
+  marker_length = 0.055 # meters; used for pose estimation
+  dictionary: DICT_6X6_250
+
 programs:
   1:
     name: ProgramA
