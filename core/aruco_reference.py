@@ -79,3 +79,4 @@ class ArucoReference:
         # p_cv = R * p_marker + t  =>  p_marker = R^T (p_cv - t)
         p_marker = R.T @ (p_cv - tvec.flatten())
         return p_marker
+
