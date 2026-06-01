@@ -1,5 +1,10 @@
+import os
+
 import cv2
 import numpy as np
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from communication.realsense import DepthCamera
 
 MARKER_LENGTH = 0.055  # meters (edge length of the printed marker)
