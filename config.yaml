@@ -7,6 +7,13 @@ aruco:
   marker_length: 0.055   # meters; used for pose estimation
   dictionary: DICT_6X6_250
 
+charuco:                 # hand-eye calibration board (tools/aruco_calibate.py)
+  squares_x: 8    # squares across
+  squares_y: 11     # squares down
+  square_length: 0.0236  # meters; chessboard square side
+  marker_length: 0.0153  # meters; ArUco marker side inside the white squares
+  dictionary: DICT_6X6_250
+
 programs:
   1:
     name: ProgramA
