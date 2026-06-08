@@ -58,6 +58,12 @@ def detect_board_pose(frame, charuco_detector, board, camera_matrix, dist_coeffs
 
     cv2.aruco.drawDetectedCornersCharuco(debug, ch_corners, ch_ids)
     obj_pts, img_pts = board.matchImagePoints(ch_corners, ch_ids)
+    # matchImagePoints can return fewer points than len(ch_ids) on a marginal
+    # frame; solvePnP needs >= 4, so guard here (not just on the corner count).
+    if obj_pts is None or len(obj_pts) < 4:
+        cv2.putText(debug, f"matched pts: {0 if obj_pts is None else len(obj_pts)} (need 4)",
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        return False, None, None, debug, n
     ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, camera_matrix, dist_coeffs)
     if not ok:
         return False, None, None, debug, n
@@ -245,7 +251,7 @@ def main():
             state = "wait_release"
             trigger_since = None                   # re-arm settle timer for the next pose
 
-            print(f"📸 [{count}/{TOTAL_POINTS_NEEDED}]")
+            print(f" [{count}/{TOTAL_POINTS_NEEDED}]")
             print(f"    Cam   X:{t_t2c[0][0]:7.1f} Y:{t_t2c[1][0]:7.1f} Z:{t_t2c[2][0]:7.1f} mm")
             print(f"    Robot X:{X:7.1f} Y:{Y:7.1f} Z:{Z:7.1f} | A:{A:6.1f} B:{B:6.1f} C:{C:6.1f}")
     finally:
@@ -258,22 +264,61 @@ def main():
         print(f"\nCollected only {count} poses (<{TOTAL_POINTS_NEEDED}). Calibration skipped.")
         return
 
-    print("\n--- Computing Eye-in-Hand calibration (Tsai) ---")
-    R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
-        R_gripper2base, t_gripper2base, R_target2cam, t_target2cam,
-        method=cv2.CALIB_HAND_EYE_TSAI)
+    print("\n--- Computing Eye-in-Hand calibration ---")
+
+    # Cross-method agreement: if these disagree a lot, the input poses are bad.
+    methods = {
+        "TSAI": cv2.CALIB_HAND_EYE_TSAI,
+        "PARK": cv2.CALIB_HAND_EYE_PARK,
+        "HORAUD": cv2.CALIB_HAND_EYE_HORAUD,
+        "ANDREFF": cv2.CALIB_HAND_EYE_ANDREFF,
+        "DANIILIDIS": cv2.CALIB_HAND_EYE_DANIILIDIS,
+    }
+    print("\nMethod comparison (t_cam2gripper, mm) — should agree if data is good:")
+    solved = {}
+    for name, m in methods.items():
+        R_m, t_m = cv2.calibrateHandEye(
+            R_gripper2base, t_gripper2base, R_target2cam, t_target2cam, method=m)
+        solved[name] = (R_m, t_m)
+        print(f"  {name:11s} X:{t_m[0][0]:9.2f} Y:{t_m[1][0]:9.2f} Z:{t_m[2][0]:9.2f}  |t|={np.linalg.norm(t_m):8.2f}")
+
+    R_cam2gripper, t_cam2gripper = solved["TSAI"]
+
+    # Residual: the marker is fixed in the world, so its position computed in the
+    # robot base frame must be the SAME point for every pose. Spread = solve error.
+    pts_base = []
+    for Rg, tg, t_t2c in zip(R_gripper2base, t_gripper2base, t_target2cam):
+        p_grip = R_cam2gripper @ t_t2c + t_cam2gripper   # marker origin in gripper frame
+        p_base = Rg @ p_grip + tg                         # marker origin in base frame
+        pts_base.append(p_base.ravel())
+    pts_base = np.array(pts_base)
+    mean_pt = pts_base.mean(axis=0)
+    resid = np.linalg.norm(pts_base - mean_pt, axis=1)
 
     print("\n=======================================================")
-    print("🎉 EYE-IN-HAND RESULT (mm) 🎉")
+    print(" EYE-IN-HAND RESULT (TSAI, mm) ")
     print(f" X Offset : {t_cam2gripper[0][0]:.3f} mm")
     print(f" Y Offset : {t_cam2gripper[1][0]:.3f} mm")
     print(f" Z Offset : {t_cam2gripper[2][0]:.3f} mm")
     print("\nRotation Matrix (cam -> gripper):\n", R_cam2gripper)
+    print("-------------------------------------------------------")
+    print("RESIDUAL — marker position spread in base frame (lower = better):")
+    print(f"  mean marker pos in base : {mean_pt[0]:.1f}, {mean_pt[1]:.1f}, {mean_pt[2]:.1f} mm")
+    print(f"  RMS residual            : {np.sqrt((resid**2).mean()):.2f} mm")
+    print(f"  max  residual           : {resid.max():.2f} mm")
+    if resid.max() > 50:
+        print("  ⚠️  residual is large (>50mm): calibration is NOT reliable.")
+        print("      Likely degenerate poses (vary A/B/C more, about >=2 axes),")
+        print("      or a units/transform-direction mismatch in the robot pose.")
+    else:
+        print("  ✅ residual small: calibration looks consistent.")
     print("=======================================================")
 
     result_path = os.path.join(save_dir, "hand_eye_result.npz")
-    np.savez(result_path, R_cam2gripper=R_cam2gripper, t_cam2gripper=t_cam2gripper)
-    print(f"Saved: {result_path}")
+    np.savez(result_path, R_cam2gripper=R_cam2gripper, t_cam2gripper=t_cam2gripper,
+             R_gripper2base=np.array(R_gripper2base), t_gripper2base=np.array(t_gripper2base),
+             R_target2cam=np.array(R_target2cam), t_target2cam=np.array(t_target2cam))
+    print(f"Saved: {result_path}  (includes raw per-pose data for offline diagnosis)")
 
 
 if __name__ == "__main__":
