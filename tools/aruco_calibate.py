@@ -21,7 +21,7 @@ TRIGGER_DEVICE = "M2000"   # BIT  - PLC sets =1 when the KUKA has reached the po
 ACK_DEVICE = "M2001"       # BIT  - PC sets =1 after recording ("camera complete ok")
 POSE_DEVICE = "D2000"      # WORD - start of 6 double-words: X Y Z A B C (32-bit each)
 POSE_WORD_COUNT = 12       # 6 double-words * 2 words each
-TOTAL_POINTS_NEEDED = 15
+TOTAL_POINTS_NEEDED = 20
 MIN_CHARUCO_CORNERS = 8     # min chessboard corners needed for a stable board pose
 SETTLE_SEC = 0.5           # wait this long after M2000=1 before recording (robot settle + stable pose words)
 
