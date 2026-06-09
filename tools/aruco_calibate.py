@@ -1,5 +1,6 @@
 import os
 import sys
+import csv
 import time
 import struct
 
@@ -14,6 +15,10 @@ if PROJECT_ROOT not in sys.path:
 from communication.realsense import DepthCamera
 from communication.plc_comm import PLCCommunicator
 
+from tools.geometry import rotation_matrix_from_abc, marker_positions_in_base, residual_stats
+from tools.plc_decode import decode_pose
+from tools.board_detect import build_charuco, detect_board_pose
+
 # ---------------------------------------------------------------------------
 # Config  (edit the robot-handshake registers to match your PLC program)
 # ---------------------------------------------------------------------------
@@ -23,7 +28,9 @@ POSE_DEVICE = "D2000"      # WORD - start of 6 double-words: X Y Z A B C (32-bit
 POSE_WORD_COUNT = 12       # 6 double-words * 2 words each
 TOTAL_POINTS_NEEDED = 20
 MIN_CHARUCO_CORNERS = 8     # min chessboard corners needed for a stable board pose
+MAX_REPROJ_PX = 2.0        # reject a board pose whose reprojection error exceeds this (kills 180-deg flips)
 SETTLE_SEC = 0.5           # wait this long after M2000=1 before recording (robot settle + stable pose words)
+POSE_STABLE_TOL = 0.5      # max change (mm/deg) allowed between two consecutive pose reads before recording
 
 WORD_SWAP = False           # set True if KUKA REALs come back high-word-first (fixes nan/0.0 decodes)
 DEBUG_RAW_POSE = True       # print raw words + both decodings each capture; set False once verified
@@ -35,80 +42,41 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def rotation_matrix_from_abc(A, B, C):
-    """KUKA Euler angles (deg) -> rotation matrix.  R = Rz(A) @ Ry(B) @ Rx(C)."""
-    a, b, c = np.radians(A), np.radians(B), np.radians(C)
-    R_z = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
-    R_y = np.array([[np.cos(b), 0, np.sin(b)], [0, 1, 0], [-np.sin(b), 0, np.cos(b)]])
-    R_x = np.array([[1, 0, 0], [0, np.cos(c), -np.sin(c)], [0, np.sin(c), np.cos(c)]])
-    return R_z @ R_y @ R_x
+def read_robot_pose(plc, verbose=DEBUG_RAW_POSE):
+    """Read the robot pose from the PLC. Returns (pose_tuple_or_None, raw_words).
 
-
-def detect_board_pose(frame, charuco_detector, board, camera_matrix, dist_coeffs):
-    """Detect the ChArUco board. Returns (success, R_target2cam, t_target2cam, debug_frame, n_corners)."""
-    debug = frame.copy()
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    ch_corners, ch_ids, _, _ = charuco_detector.detectBoard(gray)
-
-    n = 0 if ch_ids is None else len(ch_ids)
-    if n < MIN_CHARUCO_CORNERS:
-        cv2.putText(debug, f"ChArUco corners: {n} (need {MIN_CHARUCO_CORNERS})", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        return False, None, None, debug, n
-
-    cv2.aruco.drawDetectedCornersCharuco(debug, ch_corners, ch_ids)
-    obj_pts, img_pts = board.matchImagePoints(ch_corners, ch_ids)
-    # matchImagePoints can return fewer points than len(ch_ids) on a marginal
-    # frame; solvePnP needs >= 4, so guard here (not just on the corner count).
-    if obj_pts is None or len(obj_pts) < 4:
-        cv2.putText(debug, f"matched pts: {0 if obj_pts is None else len(obj_pts)} (need 4)",
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        return False, None, None, debug, n
-    ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, camera_matrix, dist_coeffs)
-    if not ok:
-        return False, None, None, debug, n
-
-    cv2.drawFrameAxes(debug, camera_matrix, dist_coeffs, rvec, tvec, board.getSquareLength() * 2, 2)
-    cv2.putText(debug, f"X:{tvec[0][0]:.1f} Y:{tvec[1][0]:.1f} Z:{tvec[2][0]:.1f} mm",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-    R_target2cam, _ = cv2.Rodrigues(rvec)
-    return True, R_target2cam, tvec, debug, n
-
-
-POSE_SCALE = 1000.0   # PLC sends pose as int32 scaled x1000 (mm->um, deg->mdeg)
-
-
-def _decode_floats(words, swap):
-    """Decode consecutive PLC words into scaled int32 values (/POSE_SCALE).
-    swap=True => high-word-first."""
-    out = []
-    for i in range(0, len(words) - 1, 2):
-        lo, hi = words[i] & 0xFFFF, words[i + 1] & 0xFFFF
-        if swap:
-            lo, hi = hi, lo
-        val = (hi << 16) | lo
-        if val >= 0x80000000:          # sign-extend negative int32
-            val -= 0x100000000
-        out.append(val / POSE_SCALE)
-    return tuple(out)
-
-
-def read_robot_pose(plc):
-    """Read 6 floats (X Y Z A B C, mm/deg) from the PLC. Returns tuple or None on failure."""
+    pose_tuple is 6 floats (X Y Z A B C, mm/deg). raw_words is always returned so
+    the caller can log it for offline diagnosis.
+    """
     raw_words = plc.read_words(POSE_DEVICE, POSE_WORD_COUNT)
-    if DEBUG_RAW_POSE:
+    if verbose:
         print("   raw words:", " ".join(f"{w & 0xFFFF:04X}" for w in raw_words))
         for label, sw in (("normal ", False), ("swapped", True)):
             try:
-                vals = tuple(round(v, 2) for v in _decode_floats(raw_words, sw))
+                vals = tuple(round(v, 2) for v in decode_pose(raw_words, sw))
                 print(f"   decode {label}: {vals}")
             except Exception as e:
                 print(f"   decode {label}: error {e}")
     try:
-        return _decode_floats(raw_words, WORD_SWAP)
+        return decode_pose(raw_words, WORD_SWAP), raw_words
     except struct.error:
-        return None
+        return None, raw_words
+
+
+def read_stable_pose(plc):
+    """Read the pose twice; return it only if it didn't move between reads.
+
+    Guards against recording a pose while the PLC is mid-write or still holds the
+    previous value (a desync that scrambles the hand-eye pose<->image pairing).
+    Returns (pose_or_None, raw_words, stable: bool).
+    """
+    pose1, _ = read_robot_pose(plc)
+    time.sleep(0.05)
+    pose2, raw_words = read_robot_pose(plc, verbose=False)
+    if pose1 is None or pose2 is None:
+        return None, raw_words, False
+    stable = max(abs(a - b) for a, b in zip(pose1, pose2)) <= POSE_STABLE_TOL
+    return pose2, raw_words, stable
 
 
 def _waiting_for(state, trigger, board_ok, n_corners):
@@ -138,9 +106,7 @@ def main():
     save_dir = os.path.join(PROJECT_ROOT, "output")
     os.makedirs(save_dir, exist_ok=True)
 
-    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
-    board = cv2.aruco.CharucoBoard((squares_x, squares_y), square_mm, marker_mm, dictionary)
-    charuco_detector = cv2.aruco.CharucoDetector(board)
+    board, charuco_detector = build_charuco(squares_x, squares_y, square_mm, marker_mm, dict_name)
 
     # PLC is mandatory: capture is driven by the robot trigger bit.
     plc = PLCCommunicator(plc_cfg["ip"], plc_cfg["port"])
@@ -157,6 +123,7 @@ def main():
 
     R_gripper2base, t_gripper2base = [], []
     R_target2cam, t_target2cam = [], []
+    capture_log = []   # one row per recorded pose, raw inputs for offline diagnosis
     count = 0
     plc.write_bit(ACK_DEVICE, 0)  # start with the ack low
 
@@ -176,8 +143,9 @@ def main():
             if not ok or frame is None:
                 continue
 
-            success, R_t2c, t_t2c, debug, n_corners = detect_board_pose(
-                frame, charuco_detector, board, camera_matrix, dist_coeffs)
+            success, R_t2c, t_t2c, debug, n_corners, reproj_px = detect_board_pose(
+                frame, charuco_detector, board, camera_matrix, dist_coeffs,
+                min_corners=MIN_CHARUCO_CORNERS, max_reproj_px=MAX_REPROJ_PX)
 
             # Read both handshake bits up front so we can show/log live status.
             trigger = plc.read_bit(TRIGGER_DEVICE)[0] == 1
@@ -225,14 +193,23 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 continue
 
-            pose = read_robot_pose(plc)
+            pose, raw_words, stable = read_stable_pose(plc)
             if pose is None:
                 print("⚠️ Failed to read robot pose from PLC — retrying this cycle.")
                 continue
+            if not stable:
+                print("⚠️ Robot pose changed between reads — PLC mid-write/desync. Skipping this cycle.")
+                continue
             X, Y, Z, A, B, C = pose
 
+            # =================================================================
+            if np.isnan(t_t2c).any() or np.isnan(R_t2c).any():
+                print("⚠️ [Warning] Camera Pose contains NaN! Retrying this frame...")
+                continue # ข้ามลูปนี้ไปสแกนภาพเฟรมใหม่ โดยไม่นับแต้ม ไม่ส่ง ACK
             # Reject empty pose words: PLC raised the trigger before writing D2000.
             # Recording (0,0,0) here corrupts the hand-eye solve, so wait instead.
+            # =================================================================
+
             if X == 0.0 and Y == 0.0 and Z == 0.0:
                 if not zero_warned:
                     print("⚠️ Robot pose reads all-zero — PLC hasn't written the pose yet. "
@@ -245,13 +222,19 @@ def main():
             t_gripper2base.append(np.array([[X], [Y], [Z]]))
             R_target2cam.append(R_t2c)
             t_target2cam.append(t_t2c)
+            capture_log.append({
+                "idx": count, "X": X, "Y": Y, "Z": Z, "A": A, "B": B, "C": C,
+                "cam_x": float(t_t2c[0][0]), "cam_y": float(t_t2c[1][0]), "cam_z": float(t_t2c[2][0]),
+                "reproj_px": reproj_px, "n_corners": n_corners,
+                "raw_words": " ".join(f"{w & 0xFFFF:04X}" for w in raw_words),
+            })
             count += 1
 
             plc.write_bit(ACK_DEVICE, 1)           # "camera complete ok" — held until PLC drops M2000
             state = "wait_release"
             trigger_since = None                   # re-arm settle timer for the next pose
 
-            print(f" [{count}/{TOTAL_POINTS_NEEDED}]")
+            print(f" [{count}/{TOTAL_POINTS_NEEDED}]  reproj={reproj_px:.2f}px corners={n_corners}")
             print(f"    Cam   X:{t_t2c[0][0]:7.1f} Y:{t_t2c[1][0]:7.1f} Z:{t_t2c[2][0]:7.1f} mm")
             print(f"    Robot X:{X:7.1f} Y:{Y:7.1f} Z:{Z:7.1f} | A:{A:6.1f} B:{B:6.1f} C:{C:6.1f}")
     finally:
@@ -286,14 +269,9 @@ def main():
 
     # Residual: the marker is fixed in the world, so its position computed in the
     # robot base frame must be the SAME point for every pose. Spread = solve error.
-    pts_base = []
-    for Rg, tg, t_t2c in zip(R_gripper2base, t_gripper2base, t_target2cam):
-        p_grip = R_cam2gripper @ t_t2c + t_cam2gripper   # marker origin in gripper frame
-        p_base = Rg @ p_grip + tg                         # marker origin in base frame
-        pts_base.append(p_base.ravel())
-    pts_base = np.array(pts_base)
-    mean_pt = pts_base.mean(axis=0)
-    resid = np.linalg.norm(pts_base - mean_pt, axis=1)
+    pts_base = marker_positions_in_base(R_gripper2base, t_gripper2base, t_target2cam,
+                                        R_cam2gripper, t_cam2gripper)
+    mean_pt, rms_resid, max_resid = residual_stats(pts_base)
 
     print("\n=======================================================")
     print(" EYE-IN-HAND RESULT (TSAI, mm) ")
@@ -304,9 +282,9 @@ def main():
     print("-------------------------------------------------------")
     print("RESIDUAL — marker position spread in base frame (lower = better):")
     print(f"  mean marker pos in base : {mean_pt[0]:.1f}, {mean_pt[1]:.1f}, {mean_pt[2]:.1f} mm")
-    print(f"  RMS residual            : {np.sqrt((resid**2).mean()):.2f} mm")
-    print(f"  max  residual           : {resid.max():.2f} mm")
-    if resid.max() > 50:
+    print(f"  RMS residual            : {rms_resid:.2f} mm")
+    print(f"  max  residual           : {max_resid:.2f} mm")
+    if max_resid > 50:
         print("  ⚠️  residual is large (>50mm): calibration is NOT reliable.")
         print("      Likely degenerate poses (vary A/B/C more, about >=2 axes),")
         print("      or a units/transform-direction mismatch in the robot pose.")
@@ -319,6 +297,17 @@ def main():
              R_gripper2base=np.array(R_gripper2base), t_gripper2base=np.array(t_gripper2base),
              R_target2cam=np.array(R_target2cam), t_target2cam=np.array(t_target2cam))
     print(f"Saved: {result_path}  (includes raw per-pose data for offline diagnosis)")
+
+    # Raw per-capture log: raw KUKA pose + words + reprojection error, so a bad
+    # run can be replayed/audited offline (was missing before — couldn't debug).
+    log_path = os.path.join(save_dir, "capture_log.csv")
+    fields = ["idx", "X", "Y", "Z", "A", "B", "C",
+              "cam_x", "cam_y", "cam_z", "reproj_px", "n_corners", "raw_words"]
+    with open(log_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(capture_log)
+    print(f"Saved: {log_path}  (raw KUKA pose, words, and reprojection error per capture)")
 
 
 if __name__ == "__main__":
