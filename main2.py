@@ -348,10 +348,16 @@ def main():
                 if name not in extracted_6dof or slot_idx >= num_targets:
                     continue
                 
-                # 1. ดึงพิกัดดิบจาก Transformer (พิกัดกล้อง OpenCV มาตรฐาน)
-                x_cam, y_cam, z_cam = extracted_6dof[name][0:3]
+                # 1. ดึงพิกัดดิบจาก Transformer
+                x_trans, y_trans, z_trans = extracted_6dof[name][0:3]
                 
-                # 🌟 2. แปลงพิกัดรวดเดียวจบด้วย 4x4 Homogeneous Transformation Matrix (Cam -> BASE)
+                # 🔄 2. จัดระเบียบทิศทางแกนให้ตรงตามมาตรฐาน OpenCV (แกน Z ลึกไปข้างหน้าเป็นบวก)
+                # และกลับทิศแกนดิ่ง Y ให้ชี้ลงตามเฟรมภาพถ่าย
+                x_cam = x_trans
+                y_cam = -y_trans       # กลับทิศแกนดิ่งให้ชี้ลงพื้น (+Y Down)
+                z_cam = -z_trans       # กลับทิศแกนลึกจากลบ ให้พุ่งไปข้างหน้าเป็นบวก (+Z Forward)
+                
+                # 🌟 3. แปลงพิกัดรวดเดียวจบด้วย 4x4 Homogeneous Transformation Matrix (Cam -> BASE)
                 P_camera_homo = np.array([[x_cam], [y_cam], [z_cam], [1.0]])
                 P_base_homo = H_CAM2BASE @ P_camera_homo
                 
