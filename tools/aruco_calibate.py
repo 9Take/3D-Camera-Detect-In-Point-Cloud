@@ -26,7 +26,7 @@ TRIGGER_DEVICE = "M2000"   # BIT  - PLC sets =1 when the KUKA has reached the po
 ACK_DEVICE = "M2001"       # BIT  - PC sets =1 after recording ("camera complete ok")
 POSE_DEVICE = "D2000"      # WORD - start of 6 double-words: X Y Z A B C (32-bit each)
 POSE_WORD_COUNT = 12       # 6 double-words * 2 words each
-TOTAL_POINTS_NEEDED = 20
+TOTAL_POINTS_NEEDED = 16
 MIN_CHARUCO_CORNERS = 8     # min chessboard corners needed for a stable board pose
 MAX_REPROJ_PX = 2.0        # reject a board pose whose reprojection error exceeds this (kills 180-deg flips)
 SETTLE_SEC = 0.5           # wait this long after M2000=1 before recording (robot settle + stable pose words)
@@ -265,7 +265,7 @@ def main():
         solved[name] = (R_m, t_m)
         print(f"  {name:11s} X:{t_m[0][0]:9.2f} Y:{t_m[1][0]:9.2f} Z:{t_m[2][0]:9.2f}  |t|={np.linalg.norm(t_m):8.2f}")
 
-    R_cam2gripper, t_cam2gripper = solved["TSAI"]
+    R_cam2gripper, t_cam2gripper = solved["PARK"]
 
     # Residual: the marker is fixed in the world, so its position computed in the
     # robot base frame must be the SAME point for every pose. Spread = solve error.
@@ -274,7 +274,7 @@ def main():
     mean_pt, rms_resid, max_resid = residual_stats(pts_base)
 
     print("\n=======================================================")
-    print(" EYE-IN-HAND RESULT (TSAI, mm) ")
+    print(" EYE-IN-HAND RESULT (PARK, mm) ")
     print(f" X Offset : {t_cam2gripper[0][0]:.3f} mm")
     print(f" Y Offset : {t_cam2gripper[1][0]:.3f} mm")
     print(f" Z Offset : {t_cam2gripper[2][0]:.3f} mm")
