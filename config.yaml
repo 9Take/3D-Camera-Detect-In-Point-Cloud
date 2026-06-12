@@ -116,7 +116,7 @@ robot:
   ee_offset:
     x: 0.0   # m
     y: 0.0   # m
-    z: -0.290  # m
+    z: -0.295  # m
 
 paths:
   debug_dir:    data/templates/debug
