@@ -94,7 +94,9 @@ class PointCloudTransformer:
             rotation_matrix = np.column_stack((x_axis, y_axis, z_axis))
             roll, pitch, yaw = rotation_matrix_to_euler_angles(rotation_matrix)
             
-            extracted_6dof[target_name] = [target_x, -target_y, -target_z, roll, pitch, yaw]
+            # Index 6 carries the full 3x3 orientation (point-cloud frame) so callers
+            # can transform it to the robot base frame; [0:3] position stays unchanged.
+            extracted_6dof[target_name] = [target_x, -target_y, -target_z, roll, pitch, yaw, rotation_matrix]
 
             # Always build per-target sphere + axis; cheap, lets show_collected_3d() display them later.
             target_ball = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
