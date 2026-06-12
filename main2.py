@@ -6,50 +6,14 @@ import json
 import os
 import argparse
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from communication.realsense import DepthCamera
 from communication.plc_comm import PLCCommunicator
 from core.detector import ObjectDetector
 from core.transformer import PointCloudTransformer
+from tools.plc_decode import encode_pose, int32_to_words
 
-
-# Error codes written to plc.error_code_device
-ERR_OK = 0
-ERR_INVALID_PROGRAM = 1
-ERR_NO_TARGETS = 2
-ERR_CAMERA = 3
-ERR_INTERNAL = 99
-
-# How long to hold complete=1 after the PLC ack so HMI scan can latch the signal.
-COMPLETE_PULSE_SEC = 1.0
-
-# ===========================================================================
-# 🛡️ HAND-EYE CALIBRATION RESULT & ROBOT POSE (4x4 HOMOGENEOUS MATRIX)
-# ===========================================================================
-R_CAM2GRIPPER = np.array([
-    [ 0.99851707,  0.04715875, -0.02719773],
-    [-0.02715520, -0.00154225, -0.99963004],
-    [-0.04718325,  0.99888622, -0.00025936]
-])
-
-T_CAM2GRIPPER = np.array([
-    [-0.044947],  # หน่วยเป็นเมตร
-    [-0.075253],  # หน่วยเป็นเมตร
-    [ 0.043377]   # หน่วยเป็นเมตร
-])
-
-# สร้างเมทริกซ์ 4x4: H_CAM2GRIPPER
-H_CAM2GRIPPER = np.eye(4)
-H_CAM2GRIPPER[0:3, 0:3] = R_CAM2GRIPPER
-H_CAM2GRIPPER[0:3, 3:4] = T_CAM2GRIPPER
-
-# พิกัดจุดจอดถ่ายภาพจริงของหุ่นยนต์ KUKA (ตั้งค่าตามหน้าจอ SmartPAD โหมด WORLD Frame)
-ROBOT_X_SCAN = 0.530   # 530.0 mm
-ROBOT_Y_SCAN = 0.015   #  15.0 mm
-ROBOT_Z_SCAN = 0.090   #  90.0 mm
-ROBOT_A_SCAN = -90.0   # องศา (A) รอบแกน Z
-ROBOT_B_SCAN = 0.0     # องศา (B) รอบแกน Y
-ROBOT_C_SCAN = -180.0  # องศา (C) รอบแกน X
 
 print("\n[INIT] Initializing Systems...")
 print("=========================================")
@@ -64,17 +28,20 @@ def kuka_abc_to_matrix(A, B, C):
     R_x = np.array([[1, 0, 0], [0, np.cos(c), -np.sin(c)], [0, np.sin(c), np.cos(c)]])
     return R_z @ R_y @ R_x
 
-# สร้างเมทริกซ์ 4x4: H_GRIPPER2BASE
-R_GRIPPER2BASE = kuka_abc_to_matrix(ROBOT_A_SCAN, ROBOT_B_SCAN, ROBOT_C_SCAN)
-T_GRIPPER2BASE = np.array([[ROBOT_X_SCAN], [ROBOT_Y_SCAN], [ROBOT_Z_SCAN]])
 
-H_GRIPPER2BASE = np.eye(4)
-H_GRIPPER2BASE[0:3, 0:3] = R_GRIPPER2BASE
-H_GRIPPER2BASE[0:3, 3:4] = T_GRIPPER2BASE
+def build_cam2base(robot_cfg):
+    """ยุบรวมผลแฮนด์-อาย (Cam -> Gripper) กับพิกัดจุดจอดถ่ายภาพของหุ่นยนต์
+    (Gripper -> BASE) เป็นเมทริกซ์ 4x4 ก้อนเดียว: จากพิกัดกล้องสู่พิกัดฐานหุ่นยนต์."""
+    H_cam2gripper = np.eye(4)
+    H_cam2gripper[0:3, 0:3] = np.array(robot_cfg['hand_eye_rotation'])
+    H_cam2gripper[0:3, 3:4] = np.array(robot_cfg['hand_eye_translation']).reshape(3, 1)
 
-# 🌟 ยุบรวมเมทริกซ์เป็นก้อนเดียว: จากพิกัดกล้องพุ่งตรงสู่พิกัดฐานเครื่องหุ่นยนต์ (Cam -> BASE)
-H_CAM2BASE = H_GRIPPER2BASE @ H_CAM2GRIPPER
-# ===========================================================================
+    pose = robot_cfg['scan_pose']
+    H_gripper2base = np.eye(4)
+    H_gripper2base[0:3, 0:3] = kuka_abc_to_matrix(pose['a'], pose['b'], pose['c'])
+    H_gripper2base[0:3, 3:4] = np.array([[pose['x']], [pose['y']], [pose['z']]])
+
+    return H_gripper2base @ H_cam2gripper
 
 
 def load_config():
@@ -128,6 +95,9 @@ def main():
 
     config = load_config()
     plc_cfg = config['plc']
+    err = plc_cfg['error_codes']
+    complete_pulse_sec = plc_cfg['complete_pulse_sec']
+    H_CAM2BASE = build_cam2base(config['robot'])
     os.makedirs(config['paths']['save_dir'], exist_ok=True)
 
     print("\n[INIT] Initializing Systems...")
@@ -141,13 +111,16 @@ def main():
     plc.start_heartbeat(plc_cfg['heartbeat_device'], plc_cfg.get('heartbeat_interval_sec', 1.0))
 
     # Initial PLC state: idle and ready
-    plc.write_word(plc_cfg['error_code_device'], ERR_OK)
+    plc.write_word(plc_cfg['error_code_device'], err['ok'])
     set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=0)
 
-    pos_mul  = plc_cfg.get('position_multiplier', 10000)
     conf_mul = plc_cfg.get('confidence_multiplier', 100)
-    words_per_slot = plc_cfg.get('words_per_slot', 4)
     max_points = plc_cfg.get('max_points', 5)
+
+    # Result slot layout (doubleword / int32, low-word-first, value x1000 mm/deg).
+    # 7 dwords = 14 words per slot, from slot_base_device (D1003):
+    #   +0 X  +2 Y  +4 Z  +6 A  +8 B  +10 C  +12 Conf
+    words_per_slot = 14
 
     current_program_no = None
     plc_test_mode = False
@@ -264,12 +237,12 @@ def main():
 
             # ---- Cycle start ----
             set_status(plc, plc_cfg, ready=0, busy=1, complete=0, error=0)
-            plc.write_word(plc_cfg['error_code_device'], ERR_OK)
+            plc.write_word(plc_cfg['error_code_device'], err['ok'])
 
             program_no = current_program_no
             if program_no is None or program_no not in detectors:
                 print(f"\n[ERROR] Cannot scan: program no. is {program_no}")
-                plc.write_word(plc_cfg['error_code_device'], ERR_INVALID_PROGRAM)
+                plc.write_word(plc_cfg['error_code_device'], err['invalid_program'])
                 set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
                 _wait_trigger_low(plc, plc_cfg)
                 continue
@@ -280,7 +253,7 @@ def main():
 
             ret, _, color_raw = cam.get_raw_frame()
             if not ret:
-                plc.write_word(plc_cfg['error_code_device'], ERR_CAMERA)
+                plc.write_word(plc_cfg['error_code_device'], err['camera'])
                 set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
                 _wait_trigger_low(plc, plc_cfg)
                 continue
@@ -303,10 +276,10 @@ def main():
             if not best:
                 print("\n[WARNING] No targets found.")
                 plc.write_word(plc_cfg['amount_device'], 0)
-                plc.write_word(plc_cfg['error_code_device'], ERR_NO_TARGETS)
+                plc.write_word(plc_cfg['error_code_device'], err['no_targets'])
                 if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
                     _wait_trigger_low(plc, plc_cfg)
-                time.sleep(COMPLETE_PULSE_SEC)
+                time.sleep(complete_pulse_sec)
                 set_status(plc, plc_cfg, ready=1, complete=0, error=0)
                 continue
 
@@ -326,10 +299,10 @@ def main():
 
             if not extracted_6dof:
                 plc.write_word(plc_cfg['amount_device'], 0)
-                plc.write_word(plc_cfg['error_code_device'], ERR_NO_TARGETS)
+                plc.write_word(plc_cfg['error_code_device'], err['no_targets'])
                 if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
                     _wait_trigger_low(plc, plc_cfg)
-                time.sleep(COMPLETE_PULSE_SEC)
+                time.sleep(complete_pulse_sec)
                 set_status(plc, plc_cfg, ready=1, complete=0, error=0)
                 continue
 
@@ -348,41 +321,51 @@ def main():
                 if name not in extracted_6dof or slot_idx >= num_targets:
                     continue
                 
-                # 1. ดึงพิกัดดิบจาก Transformer
+                # 1. ดึงพิกัดดิบ + เมทริกซ์การหมุนจาก Transformer
                 x_trans, y_trans, z_trans = extracted_6dof[name][0:3]
-                
+                R_pcd = extracted_6dof[name][6]   # 3x3 orientation (point-cloud frame)
+
                 # 🔄 2. จัดระเบียบทิศทางแกนให้ตรงตามมาตรฐาน OpenCV (แกน Z ลึกไปข้างหน้าเป็นบวก)
                 # และกลับทิศแกนดิ่ง Y ให้ชี้ลงตามเฟรมภาพถ่าย
                 x_cam = x_trans
                 y_cam = -y_trans       # กลับทิศแกนดิ่งให้ชี้ลงพื้น (+Y Down)
                 z_cam = -z_trans       # กลับทิศแกนลึกจากลบ ให้พุ่งไปข้างหน้าเป็นบวก (+Z Forward)
-                
+
                 # 🌟 3. แปลงพิกัดรวดเดียวจบด้วย 4x4 Homogeneous Transformation Matrix (Cam -> BASE)
                 P_camera_homo = np.array([[x_cam], [y_cam], [z_cam], [1.0]])
                 P_base_homo = H_CAM2BASE @ P_camera_homo
-                
+
                 # ดึงเฉพาะ 3 แถวแรกออกมาเป็น X, Y, Z บนพิกัดโลกอ้างอิงฐานเครื่องหุ่นยนต์
                 x_out, y_out, z_out = P_base_homo[0:3].flatten()
 
-                # 4. นำพิกัดโลกคูณ Multiplier เพื่อส่งให้ PLC ตามปกติ
-                xi = int(round(x_out * pos_mul))
-                yi = int(round(y_out * pos_mul))
-                zi = int(round(z_out * pos_mul))
+                # 🌀 3b. แปลงทิศทางการหมุน (orientation) เข้าสู่เฟรมฐานหุ่นยนต์
+                # F สลับแกน Y/Z ของ point-cloud frame กลับเป็น raw camera frame (เฟรมเดียวกับ H_CAM2BASE)
+                F = np.diag([1.0, -1.0, -1.0])
+                R_base = H_CAM2BASE[0:3, 0:3] @ F @ R_pcd
+                # แปลงเป็นมุม KUKA A,B,C (intrinsic Z-Y-X, องศา) เหมือน tools/aruco_calibate.py
+                A_deg, B_deg, C_deg = Rotation.from_matrix(R_base).as_euler("ZYX", degrees=True)
+
+                # 4. เข้ารหัสเป็น doubleword (int32, low-word-first, x1000) หน่วย mm/deg
+                #    ให้ฝั่ง PLC อ่านกลับด้วย decode_pose ได้ตรงกัน
+                x_mm, y_mm, z_mm = x_out * 1000.0, y_out * 1000.0, z_out * 1000.0
+                pose_words = encode_pose([x_mm, y_mm, z_mm, A_deg, B_deg, C_deg])
                 ci = int(round(conf * conf_mul))
-                
+                slot_words = pose_words + int32_to_words(ci)   # 7 dwords = 14 words
+
                 plc.write_slot(
                     plc_cfg['slot_base_device'], slot_idx, words_per_slot,
-                    [xi, yi, zi, ci],
+                    slot_words,
                 )
-                
+
                 print(f"[PLC] slot {slot_idx} ({point}/{name})")
-                print(f"  float : X={x_out:+.4f}m  Y={y_out:+.4f}m  Z={z_out:+.4f}m  Conf={conf:6.2f}%")
-                print(f"  sent  : X={xi:+6d}   Y={yi:+6d}   Z={zi:+6d}   Conf={ci:6d}"
-                      f"   (x{pos_mul} / x{conf_mul})")
-                
+                print(f"  base  : X={x_mm:+9.2f}mm Y={y_mm:+9.2f}mm Z={z_mm:+9.2f}mm")
+                print(f"          A={A_deg:+8.2f}° B={B_deg:+8.2f}° C={C_deg:+8.2f}°  Conf={conf:6.2f}%")
+                print(f"  sent  : {len(slot_words)} words (int32 x1000, mm/deg; Conf x{conf_mul})")
+
                 memory_state["targets"][point] = {
                     "template": name,
                     "X": round(x_out, 4), "Y": round(y_out, 4), "Z": round(z_out, 4),
+                    "A": round(float(A_deg), 2), "B": round(float(B_deg), 2), "C": round(float(C_deg), 2),
                     "Confidence": round(conf, 2),
                 }
                 slot_idx += 1
@@ -393,10 +376,12 @@ def main():
             print(f"[PLC] Wrote {num_targets} slot(s).")
             if set_status(plc, plc_cfg, busy=0, complete=1, error=0):
                 _wait_trigger_low(plc, plc_cfg)
-            time.sleep(COMPLETE_PULSE_SEC)
+            time.sleep(complete_pulse_sec)
             set_status(plc, plc_cfg, ready=1, complete=0)
             print("[CYCLE] Done. Ready for next trigger.\n")
+            ######################################################
 
+            
 
     except KeyboardInterrupt:
         print("\n[INFO] Exiting program...")
