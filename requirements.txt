@@ -1,3 +1,7 @@
+##Python dependencies for the project. To install, run:
+##pip install -r requirements.txt
+## Python --version: 3.8.10
+
 attrs==25.3.0
 blinker==1.8.2
 certifi==2026.4.22
@@ -6,7 +10,6 @@ click==8.1.8
 ConfigArgParse==1.7.5
 contourpy==1.1.1
 cycler==0.12.1
-dash==4.1.0
 fastjsonschema==2.21.2
 Flask==3.0.3
 fonttools==4.57.0
@@ -50,4 +53,3 @@ Werkzeug==3.0.6
 zipp==3.20.2
 pymcprotocol==0.3.0
 PyYAML==6.0.3
-streamlit==1.35.0

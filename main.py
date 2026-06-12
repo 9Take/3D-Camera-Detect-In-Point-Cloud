@@ -6,25 +6,119 @@ import json
 import os
 import argparse
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from communication.realsense import DepthCamera
 from communication.plc_comm import PLCCommunicator
 from core.detector import ObjectDetector
 from core.transformer import PointCloudTransformer
+from tools.plc_decode import encode_pose, int32_to_words, decode_pose
 
 
-# Error codes written to plc.error_code_device
-ERR_OK = 0
-ERR_INVALID_PROGRAM = 1
-ERR_NO_TARGETS = 2
-ERR_CAMERA = 3
-ERR_INTERNAL = 99
-
-# How long to hold complete=1 after the PLC ack so HMI scan can latch the signal.
-COMPLETE_PULSE_SEC = 1.0
+print("\n[INIT] Initializing Systems...")
+print("=========================================")
+print("🌟 CORE CHECK: RUNNING WITH 4x4 MATRIX BASE MODE 🌟")
+print("=========================================")
 
 
+# ===========================================================================
+# Geometry helpers — robot pose maths (camera frame <-> robot base frame)
+# ===========================================================================
+def kuka_abc_to_matrix(A, B, C):
+    """คำนวณหาเมทริกซ์การหมุนของหุ่นยนต์ KUKA (คอนเวนชัน Intrinsic Z-Y-X)"""
+    a, b, c = np.radians(A), np.radians(B), np.radians(C)
+    R_z = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+    R_y = np.array([[np.cos(b), 0, np.sin(b)], [0, 1, 0], [-np.sin(b), 0, np.cos(b)]])
+    R_x = np.array([[1, 0, 0], [0, np.cos(c), -np.sin(c)], [0, np.sin(c), np.cos(c)]])
+    return R_z @ R_y @ R_x
+
+
+def build_cam2base(robot_cfg, scan_pose):
+    """ยุบรวมผลแฮนด์-อาย (Cam -> Gripper) กับพิกัดจุดจอดถ่ายภาพของหุ่นยนต์
+    (Gripper -> BASE) เป็นเมทริกซ์ 4x4 ก้อนเดียว: จากพิกัดกล้องสู่พิกัดฐานหุ่นยนต์.
+    scan_pose: dict {x, y, z (เมตร), a, b, c (องศา)} — จาก config หรืออ่านสดจาก PLC."""
+    H_cam2gripper = np.eye(4)
+    H_cam2gripper[0:3, 0:3] = np.array(robot_cfg['hand_eye_rotation'])
+    H_cam2gripper[0:3, 3:4] = np.array(robot_cfg['hand_eye_translation']).reshape(3, 1)
+
+    H_gripper2base = np.eye(4)
+    H_gripper2base[0:3, 0:3] = kuka_abc_to_matrix(scan_pose['a'], scan_pose['b'], scan_pose['c'])
+    H_gripper2base[0:3, 3:4] = np.array([[scan_pose['x']], [scan_pose['y']], [scan_pose['z']]])
+
+    return H_gripper2base @ H_cam2gripper
+
+
+def read_robot_scan_pose(plc, plc_cfg):
+    """อ่านพิกัดจุดจอดถ่ายภาพสดจาก PLC (รีจิสเตอร์/ฟอร์แมตเดียวกับ ArUco calibration).
+    PLC ส่งมาเป็น int32 x1000 หน่วย mm/deg. คืน dict {x,y,z (เมตร), a,b,c (องศา)}
+    หรือ None ถ้าอ่านไม่ได้/ยังไม่มีค่า (อ่านกลับมาเป็นศูนย์ทั้งหมด)."""
+    words = plc.read_words(plc_cfg['pose_device'], plc_cfg['pose_word_count'])
+    x, y, z, a, b, c = decode_pose(words, plc_cfg.get('pose_word_swap', False))  # mm/deg
+    if x == 0.0 and y == 0.0 and z == 0.0:
+        return None
+    return {'x': x / 1000.0, 'y': y / 1000.0, 'z': z / 1000.0, 'a': a, 'b': b, 'c': c}
+
+
+def cam_point_to_base(H_cam2base, x_cam, y_cam, z_cam, ee_offset):
+    """แปลงจุดในเฟรมกล้องไปยังเฟรมฐานหุ่นยนต์ โดยเลื่อนด้วยออฟเซ็ตปลายแท่ง (stick EE)
+    ที่วัดในเฟรมกล้อง (X ขวา, Y ลง, Z พุ่งไปข้างหน้า) หน่วยเมตร — ปรับเฉพาะตำแหน่ง XYZ
+    ส่วนทิศทางการหมุนไม่เปลี่ยน. คืนค่า X, Y, Z บนพิกัดฐานหุ่นยนต์."""
+    P_camera_homo = np.array([
+        [x_cam + ee_offset[0]],
+        [y_cam + ee_offset[1]],
+        [z_cam + ee_offset[2]],
+        [1.0],
+    ])
+    return (H_cam2base @ P_camera_homo)[0:3].flatten()
+
+
+def encode_target_pose(target_6dof, conf, H_cam2base, ee_offset, conf_mul):
+    """Turn one detected target into the 14 PLC words for its result slot.
+
+    Steps, on the transformer's 6DOF output for a single target:
+      1. flip axes from point-cloud frame to OpenCV camera frame (+Y down, +Z forward),
+      2. add the stick-EE offset and transform the point Cam -> BASE,
+      3. convert the orientation to KUKA A,B,C angles (intrinsic Z-Y-X, degrees),
+      4. encode X,Y,Z (mm), A,B,C (deg) and confidence as int32 x1000 -> 14 words.
+
+    Returns (slot_words, (x,y,z) in metres, (A,B,C) in degrees) — the tuples are for
+    logging and the position-memory JSON.
+    """
+    # 1. ดึงพิกัดดิบ + เมทริกซ์การหมุนจาก Transformer
+    x_trans, y_trans, z_trans = target_6dof[0:3]
+    R_pcd = target_6dof[6]   # 3x3 orientation (point-cloud frame)
+
+    # 🔄 2. จัดระเบียบทิศทางแกนให้ตรงตามมาตรฐาน OpenCV (แกน Z ลึกไปข้างหน้าเป็นบวก)
+    # และกลับทิศแกนดิ่ง Y ให้ชี้ลงตามเฟรมภาพถ่าย
+    x_cam = x_trans
+    y_cam = -y_trans       # กลับทิศแกนดิ่งให้ชี้ลงพื้น (+Y Down)
+    z_cam = -z_trans       # กลับทิศแกนลึกจากลบ ให้พุ่งไปข้างหน้าเป็นบวก (+Z Forward)
+
+    # 🌟 3. เลื่อนจุดด้วยออฟเซ็ตปลายแท่ง (เฟรมกล้อง) แล้วแปลงเป็นพิกัดฐานหุ่นยนต์
+    x_out, y_out, z_out = cam_point_to_base(H_cam2base, x_cam, y_cam, z_cam, ee_offset)
+
+    # 🌀 3b. แปลงทิศทางการหมุน (orientation) เข้าสู่เฟรมฐานหุ่นยนต์
+    # F สลับแกน Y/Z ของ point-cloud frame กลับเป็น raw camera frame (เฟรมเดียวกับ H_CAM2BASE)
+    F = np.diag([1.0, -1.0, -1.0])
+    R_base = H_cam2base[0:3, 0:3] @ F @ R_pcd
+    # แปลงเป็นมุม KUKA A,B,C (intrinsic Z-Y-X, องศา) เหมือน tools/aruco_calibate.py
+    A_deg, B_deg, C_deg = Rotation.from_matrix(R_base).as_euler("ZYX", degrees=True)
+
+    # 4. เข้ารหัสเป็น doubleword (int32, low-word-first, x1000) หน่วย mm/deg
+    #    ให้ฝั่ง PLC อ่านกลับด้วย decode_pose ได้ตรงกัน
+    x_mm, y_mm, z_mm = x_out * 1000.0, y_out * 1000.0, z_out * 1000.0
+    pose_words = encode_pose([x_mm, y_mm, z_mm, A_deg, B_deg, C_deg])
+    ci = int(round(conf * conf_mul))
+    slot_words = pose_words + int32_to_words(ci)   # 7 dwords = 14 words
+
+    return slot_words, (x_out, y_out, z_out), (float(A_deg), float(B_deg), float(C_deg))
+
+
+# ===========================================================================
+# Config & detector loading
+# ===========================================================================
 def load_config():
+    """Load and parse config.yaml from the working directory into a dict."""
     with open("config.yaml", "r") as f:
         return yaml.safe_load(f)
 
@@ -53,13 +147,15 @@ def best_per_point(detector, detected_names, confidences):
     return best
 
 
-# Status bits are written together in one packet to cut PLC load (4 packets -> 1).
-# Assumes status devices are consecutive in order: ready, error, busy, complete
-# (e.g. M1000, M1001, M1002, M1003). Cache holds last-written values so partial
-# updates don't need an extra read.
+# ===========================================================================
+# PLC status / handshake helpers
+# ===========================================================================
 _last_status = {'ready': 0, 'error': 0, 'busy': 0, 'complete': 0}
 
 def set_status(plc, cfg, ready=None, busy=None, complete=None, error=None):
+    """Update only the given status bits (ready/busy/complete/error) and push all four
+    to the PLC as a block. Remembers the last values so unspecified bits are preserved.
+    Returns True if the PLC write succeeded."""
     if ready    is not None: _last_status['ready']    = int(bool(ready))
     if busy     is not None: _last_status['busy']     = int(bool(busy))
     if complete is not None: _last_status['complete'] = int(bool(complete))
@@ -72,15 +168,37 @@ def set_status(plc, cfg, ready=None, busy=None, complete=None, error=None):
     return ok
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Heat Exchanger Vision System")
-    parser.add_argument('--debug', action='store_true', help='Also open the 3D point-cloud viewer after each trigger')
-    args = parser.parse_args()
+def report_no_results(plc, plc_cfg, err, complete_pulse_sec):
+    """PLC handshake for a trigger that yielded no usable targets: write amount=0 and
+    the no_targets error code, pulse 'complete' (waiting for the trigger to clear), then
+    return to idle/ready."""
+    plc.write_word(plc_cfg['amount_device'], 0)
+    plc.write_word(plc_cfg['error_code_device'], err['no_targets'])
+    if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
+        _wait_trigger_low(plc, plc_cfg)
+    time.sleep(complete_pulse_sec)
+    set_status(plc, plc_cfg, ready=1, complete=0, error=0)
 
-    config = load_config()
-    plc_cfg = config['plc']
-    os.makedirs(config['paths']['save_dir'], exist_ok=True)
 
+def _wait_trigger_low(plc, plc_cfg, timeout_sec=10.0, poll_sec=0.1):
+    """Block until the PLC trigger bit goes back to 0 (the PLC acknowledged our result),
+    or until timeout_sec elapses. Returns True if it cleared, False on timeout."""
+    start = time.time()
+    while time.time() - start < timeout_sec:
+        if plc.read_bit(plc_cfg['trigger_device'])[0] == 0:
+            return True
+        time.sleep(poll_sec)
+    print("[WARN] Timed out waiting for trigger to clear.")
+    return False
+
+
+# ===========================================================================
+# System setup & live display
+# ===========================================================================
+def setup_systems(config, plc_cfg, err):
+    """Initialise the camera, per-program detectors, the point-cloud transformer and the
+    PLC link (with heartbeat), push the initial idle/ready state, and return
+    (cam, detectors, transformer, plc)."""
     print("\n[INIT] Initializing Systems...")
     cam = DepthCamera(config['camera']['resolution_width'], config['camera']['resolution_height'])
     detectors = load_detectors(config['programs'])
@@ -92,279 +210,70 @@ def main():
     plc.start_heartbeat(plc_cfg['heartbeat_device'], plc_cfg.get('heartbeat_interval_sec', 1.0))
 
     # Initial PLC state: idle and ready
-    plc.write_word(plc_cfg['error_code_device'], ERR_OK)
+    plc.write_word(plc_cfg['error_code_device'], err['ok'])
     set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=0)
-
-    pos_mul  = plc_cfg.get('position_multiplier', 10000)
-    conf_mul = plc_cfg.get('confidence_multiplier', 100)
-    words_per_slot = plc_cfg.get('words_per_slot', 4)
-    max_points = plc_cfg.get('max_points', 5)
-
-    # Sticky program number: None until the PLC sends a valid one (or operator
-    # picks one in --debug). Stale PLC reads (0 / unknown) leave it untouched.
-    current_program_no = None
-
-    # Debug-only PLC-test sub-mode: 'b' toggles; while active, 1-9 writes to
-    # program_no_test_device and 't' pulses trigger_test_device.
-    plc_test_mode = False
-
-    print("\n[SYSTEM READY] Waiting for PLC trigger...")
-
-    # Throttle PLC polling independent of camera FPS to limit packet rate.
-    plc_poll_interval = plc_cfg.get('poll_interval_sec', 0.1)  # 10 Hz default
-    last_plc_poll = 0.0
-    trigger_bit = 0
-
-    try:
-        while True:
-            ret, depth_raw, color_raw = cam.get_raw_frame()
-            if not ret: continue
-            color_frame = np.asanyarray(color_raw.get_data())
-
-            # --- (1) Poll PLC program no.; sticky if invalid -------------------
-            # In debug mode without PLC-test, keyboard owns current_program_no
-            # (otherwise the PLC poll would overwrite manual 1-9 presses each frame).
-            poll_plc_now = (time.time() - last_plc_poll) >= plc_poll_interval
-            if poll_plc_now and (not args.debug or plc_test_mode):
-                plc_pno = plc.read_word(plc_cfg['program_no_device'])
-                if plc_pno in detectors:
-                    current_program_no = plc_pno
-
-            # --- (2) Live preview: 2D detection + bounding box only -----------
-            main_display = color_frame.copy()
-            if current_program_no is not None:
-                p_name, p_det = detectors[current_program_no]
-                detected_pixels, detected_names, confidences, detected_homographies, _ = p_det.detect(
-                    color_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
-                )
-                best = best_per_point(p_det, detected_names, confidences)
-
-                cv2.putText(main_display,
-                            f"Program {current_program_no}: {p_name}",
-                            (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                for point in sorted(best):
-                    entry = best[point]
-                    pixel = detected_pixels[entry['idx']]
-                    homo  = detected_homographies[entry['idx']]
-                    cv2.polylines(main_display, [np.int32(homo)], True, (0, 255, 0), 2, cv2.LINE_AA)
-                    cv2.circle(main_display, pixel, 6, (0, 0, 255), -1)
-                    cv2.putText(main_display, f"{point}: {entry['name']} ({entry['conf']:.1f}%)",
-                                (pixel[0] - 40, pixel[1] - 15),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-            else:
-                cv2.putText(main_display, "WAITING for Program No. from PLC", (10, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-
-            if args.debug:
-                if plc_test_mode:
-                    hint = "[PLC TEST: 1-9=write D1500 | t=pulse M1500 | b=exit test | p=3D | ESC/q=Quit]"
-                else:
-                    hint = "[t=Trigger | 1-9=Set Program | b=PLC test | p=3D view | ESC/q=Quit]"
-            else:
-                hint = "[p=3D view | ESC/q=Quit]"
-            cv2.putText(main_display, hint, (10, color_frame.shape[0] - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-            if args.debug and plc_test_mode:
-                cv2.putText(main_display, "PLC TEST MODE",
-                            (color_frame.shape[1] - 230, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-            cv2.imshow("Vision System - Live", main_display)
-
-            prog_label = (f"P{current_program_no}:{detectors[current_program_no][0]}"
-                          if current_program_no is not None else "P?:waiting")
-            mode_label = "PLC-TEST " if (args.debug and plc_test_mode) else ""
-            sys.stdout.write(
-                f"\r[HB {plc.heartbeat_counter:5d}] {mode_label}{prog_label}  "
-                f"waiting for trigger... "
-            )
-            sys.stdout.flush()
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == 27 or key == ord('q'):
-                break
-
-            # 'p' opens the 3D viewer for the most recent trigger's geometries
-            if key == ord('p'):
-                if getattr(transformer, "_last_geometries", None):
-                    print("[VIEW] Showing 3D point cloud — close window to continue.")
-                    transformer.show_collected_3d()
-                else:
-                    print("[VIEW] No trigger has run yet; nothing to show.")
-
-            # --- Debug-only keyboard: set program (1-9) and manual trigger (t) -
-            # In PLC-test sub-mode ('b'), 1-9 writes program_no_test_device and
-            # 't' pulses trigger_test_device instead of affecting the scan flow.
-            manual_trigger = False
-            if args.debug:
-                if key == ord('b'):
-                    plc_test_mode = not plc_test_mode
-                    if not plc_test_mode:
-                        plc.write_bit(plc_cfg['trigger_test_device'], 0)
-                    print(f"\n[DEBUG] PLC test mode {'ON' if plc_test_mode else 'OFF'}")
-                elif ord('1') <= key <= ord('9'):
-                    n = key - ord('0')
-                    if plc_test_mode:
-                        plc.write_word(plc_cfg['program_no_test_device'], n)
-                        print(f"\n[PLC-TEST] Wrote program no. {n} -> {plc_cfg['program_no_test_device']}")
-                    elif n in detectors:
-                        current_program_no = n
-                        print(f"\n[DEBUG] Program No. set to {n} ({detectors[n][0]})")
-                    else:
-                        print(f"\n[DEBUG] No detector for program {n}; ignored")
-                elif key == ord('t'):
-                    if plc_test_mode:
-                        plc.write_bit(plc_cfg['trigger_test_device'], 1)
-                        time.sleep(0.1)
-                        plc.write_bit(plc_cfg['trigger_test_device'], 0)
-                        print(f"\n[PLC-TEST] Pulsed {plc_cfg['trigger_test_device']}")
-                    else:
-                        manual_trigger = True
-
-            # --- (3) Trigger check --------------------------------------------
-            if poll_plc_now:
-                trigger_bit = plc.read_bit(plc_cfg['trigger_device'])[0]
-                last_plc_poll = time.time()
-            if not (trigger_bit == 1 or manual_trigger):
-                continue
-            # Consume the trigger so a stale cache doesn't re-enter the cycle.
-            # PLC must re-assert (and we must re-poll) for the next iteration.
-            trigger_bit = 0
-
-            # ---- Cycle start ----
-            set_status(plc, plc_cfg, ready=0, busy=1, complete=0, error=0)
-            plc.write_word(plc_cfg['error_code_device'], ERR_OK)
-
-            program_no = current_program_no
-            if program_no is None or program_no not in detectors:
-                print(f"\n[ERROR] Cannot scan: program no. is {program_no}")
-                plc.write_word(plc_cfg['error_code_device'], ERR_INVALID_PROGRAM)
-                set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
-                _wait_trigger_low(plc, plc_cfg)
-                continue
-
-            print(f"\n[TRIGGER] Program No. = {program_no}{'  (manual)' if manual_trigger else ''}")
-            prog_name, detector = detectors[program_no]
-            print(f"[RUN] Using program '{prog_name}'")
-
-            # Re-capture frame for the actual scan
-            ret, _, color_raw = cam.get_raw_frame()
-            if not ret:
-                plc.write_word(plc_cfg['error_code_device'], ERR_CAMERA)
-                set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
-                _wait_trigger_low(plc, plc_cfg)
-                continue
-            scan_frame = np.asanyarray(color_raw.get_data())
-
-            detected_pixels, detected_names, confidences, detected_homos, _ = detector.detect(
-                scan_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
-            )
-            best = best_per_point(detector, detected_names, confidences)
-
-            # ---- Trigger result window: one tile per sub-template -----------
-            best_indices = {entry['idx'] for entry in best.values()}
-            result_img = _build_trigger_result_grid(
-                scan_frame, detected_pixels, detected_names, confidences,
-                detected_homos, detector, best_indices,
-                header=f"TRIGGER  Program {program_no} ({prog_name})",
-            )
-            cv2.imshow("Trigger Result", result_img)
-            cv2.waitKey(1)  # repaint immediately
-
-            if not best:
-                print("\n[WARNING] No targets found.")
-                plc.write_word(plc_cfg['amount_device'], 0)
-                plc.write_word(plc_cfg['error_code_device'], ERR_NO_TARGETS)
-                if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
-                    _wait_trigger_low(plc, plc_cfg)
-                time.sleep(COMPLETE_PULSE_SEC)  # hold complete=1 long enough for HMI
-                set_status(plc, plc_cfg, ready=1, complete=0, error=0)
-                continue
-
-            filtered_pixels, filtered_names, filtered_confs, filtered_points = [], [], [], []
-            for point in sorted(best):
-                entry = best[point]
-                filtered_pixels.append(detected_pixels[entry['idx']])
-                filtered_names.append(entry['name'])
-                filtered_confs.append(entry['conf'])
-                filtered_points.append(point)
-                print(f"[FILTER] {point} -> {entry['name']} (Conf: {entry['conf']:.2f}%)")
-
-            # show_3d=False so PLC writes & prints happen immediately
-            extracted_6dof = transformer.extract_3d_data(
-                filtered_pixels, filtered_names,
-                show_3d=False,
-            )
-
-            if not extracted_6dof:
-                plc.write_word(plc_cfg['amount_device'], 0)
-                plc.write_word(plc_cfg['error_code_device'], ERR_NO_TARGETS)
-                if set_status(plc, plc_cfg, busy=0, complete=1, error=1):
-                    _wait_trigger_low(plc, plc_cfg)
-                time.sleep(COMPLETE_PULSE_SEC)  # hold complete=1 long enough for HMI
-                set_status(plc, plc_cfg, ready=1, complete=0, error=0)
-                continue
-
-            # Write results: amount + per-slot (X, Y, Z, Conf)
-            num_targets = min(len(extracted_6dof), max_points)
-            plc.write_word(plc_cfg['amount_device'], num_targets)
-
-            memory_state = {
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "program_no": program_no,
-                "program_name": prog_name,
-                "targets": {}
-            }
-
-            slot_idx = 0
-            for name, point, conf in zip(filtered_names, filtered_points, filtered_confs):
-                if name not in extracted_6dof or slot_idx >= num_targets:
-                    continue
-                x, y, z = extracted_6dof[name][0:3]
-                xi = int(round(x * pos_mul))
-                yi = int(round(y * pos_mul))
-                zi = int(round(z * pos_mul))
-                ci = int(round(conf * conf_mul))
-                plc.write_slot(
-                    plc_cfg['slot_base_device'], slot_idx, words_per_slot,
-                    [xi, yi, zi, ci],
-                )
-                print(f"[PLC] slot {slot_idx} ({point}/{name})")
-                print(f"  float : X={x:+.4f}m  Y={y:+.4f}m  Z={z:+.4f}m  Conf={conf:6.2f}%")
-                print(f"  sent  : X={xi:+6d}   Y={yi:+6d}   Z={zi:+6d}   Conf={ci:6d}"
-                      f"   (x{pos_mul} / x{conf_mul})")
-                memory_state["targets"][point] = {
-                    "template": name,
-                    "X": round(x, 4), "Y": round(y, 4), "Z": round(z, 4),
-                    "Confidence": round(conf, 2),
-                }
-                slot_idx += 1
-
-            with open(config['paths']['position_mem'], "w") as f:
-                json.dump(memory_state, f, indent=4)
-
-            print(f"[PLC] Wrote {num_targets} slot(s).")
-            if set_status(plc, plc_cfg, busy=0, complete=1, error=0):
-                _wait_trigger_low(plc, plc_cfg)
-            time.sleep(COMPLETE_PULSE_SEC)  # hold complete=1 long enough for HMI
-            set_status(plc, plc_cfg, ready=1, complete=0)
-            print("[CYCLE] Done. Ready for next trigger.\n")
+    return cam, detectors, transformer, plc
 
 
-    except KeyboardInterrupt:
-        print("\n[INFO] Exiting program...")
-    finally:
-        set_status(plc, plc_cfg, ready=0, busy=0, complete=0, error=1)
-        plc.disconnect()
-        cam.release()
-        cv2.destroyAllWindows()
+def render_live_view(color_frame, current_program_no, detectors, config, args, plc_test_mode, plc):
+    """Draw the live "Vision System - Live" window for one frame: run detection for the
+    active program and overlay the best target per point (or a waiting message), the
+    key-hint bar and the PLC-TEST badge; then refresh the one-line console heartbeat."""
+    main_display = color_frame.copy()
+    if current_program_no is not None:
+        p_name, p_det = detectors[current_program_no]
+        detected_pixels, detected_names, confidences, detected_homographies, _ = p_det.detect(
+            color_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
+        )
+        best = best_per_point(p_det, detected_names, confidences)
+
+        cv2.putText(main_display,
+                    f"Program {current_program_no}: {p_name}",
+                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        for point in sorted(best):
+            entry = best[point]
+            pixel = detected_pixels[entry['idx']]
+            homo  = detected_homographies[entry['idx']]
+            cv2.polylines(main_display, [np.int32(homo)], True, (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.circle(main_display, pixel, 6, (0, 0, 255), -1)
+            cv2.putText(main_display, f"{point}: {entry['name']} ({entry['conf']:.1f}%)",
+                        (pixel[0] - 40, pixel[1] - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+    else:
+        cv2.putText(main_display, "WAITING for Program No. from PLC", (10, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+
+    if args.debug:
+        if plc_test_mode:
+            hint = "[PLC TEST: 1-9=write D1500 | t=pulse M1500 | b=exit test | p=3D | ESC/q=Quit]"
+        else:
+            hint = "[t=Trigger | 1-9=Set Program | b=PLC test | p=3D view | ESC/q=Quit]"
+    else:
+        hint = "[p=3D view | ESC/q=Quit]"
+    cv2.putText(main_display, hint, (10, color_frame.shape[0] - 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    if args.debug and plc_test_mode:
+        cv2.putText(main_display, "PLC TEST MODE",
+                    (color_frame.shape[1] - 230, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+    cv2.imshow("Vision System - Live", main_display)
+
+    prog_label = (f"P{current_program_no}:{detectors[current_program_no][0]}"
+                  if current_program_no is not None else "P?:waiting")
+    mode_label = "PLC-TEST " if (args.debug and plc_test_mode) else ""
+    sys.stdout.write(
+        f"\r[HB {plc.heartbeat_counter:5d}] {mode_label}{prog_label}  "
+        f"waiting for trigger... "
+    )
+    sys.stdout.flush()
 
 
 def _build_trigger_result_grid(scan_frame, pixels, names, confs, homos, detector,
                                best_indices, header="", tile_w=280, tile_h=220,
                                crop_w=120, crop_h=100, cols=4):
-    """One close-up tile per detected sub-template (PointA.1, PointA.2, ...).
-    Best-per-point tiles get a thick green border + 'BEST' label.
-    """
+    """Build the "Trigger Result" review image: a grid of cropped tiles, one per
+    detected template, with its homography outline and confidence. The best template
+    per point is highlighted in green; everything else is dimmed. Returns a BGR canvas."""
     h_frame, w_frame = scan_frame.shape[:2]
     header_h = 36 if header else 0
 
@@ -421,15 +330,245 @@ def _build_trigger_result_grid(scan_frame, pixels, names, confs, homos, detector
     return canvas
 
 
-def _wait_trigger_low(plc, plc_cfg, timeout_sec=10.0, poll_sec=0.1):
-    """Block until the PLC clears its trigger bit (handshake) or timeout."""
-    start = time.time()
-    while time.time() - start < timeout_sec:
-        if plc.read_bit(plc_cfg['trigger_device'])[0] == 0:
-            return True
-        time.sleep(poll_sec)
-    print("[WARN] Timed out waiting for trigger to clear.")
-    return False
+# ===========================================================================
+# Main loop
+# ===========================================================================
+def main():
+    """Entry point. Loads config and initialises the systems, then loops forever:
+    show the live view, handle keyboard (debug / PLC-test / quit / 3D view), and on a
+    PLC or manual trigger run one scan cycle — detect targets, extract their 6DOF pose,
+    transform Cam -> robot BASE, and write the result slots back to the PLC with the
+    busy/complete handshake. Cleans up the PLC, camera and windows on exit."""
+    parser = argparse.ArgumentParser(description="Heat Exchanger Vision System")
+    parser.add_argument('--debug', action='store_true', help='Also open the 3D point-cloud viewer after each trigger')
+    args = parser.parse_args()
+
+    # ---- Config & derived constants ----
+    config = load_config()
+    plc_cfg = config['plc']
+    err = plc_cfg['error_codes']
+    complete_pulse_sec = plc_cfg['complete_pulse_sec']
+    conf_mul = plc_cfg.get('confidence_multiplier', 100)
+    max_points = plc_cfg.get('max_points', 5)
+    ee = config['robot']['ee_offset']
+    ee_offset = (ee['x'], ee['y'], ee['z'])
+    # Result slot layout (doubleword / int32, low-word-first, value x1000 mm/deg).
+    # 7 dwords = 14 words per slot, from slot_base_device (D1003):
+    #   +0 X  +2 Y  +4 Z  +6 A  +8 B  +10 C  +12 Conf
+    words_per_slot = 14
+    # Default transform from the static config scan_pose; refreshed live from the
+    # PLC each trigger (falls back to this if the PLC read is unavailable).
+    H_CAM2BASE = build_cam2base(config['robot'], config['robot']['scan_pose'])
+    os.makedirs(config['paths']['save_dir'], exist_ok=True)
+
+    # ---- Hardware / PLC init ----
+    cam, detectors, transformer, plc = setup_systems(config, plc_cfg, err)
+
+    current_program_no = None
+    plc_test_mode = False
+    plc_poll_interval = plc_cfg.get('poll_interval_sec', 0.1)
+    last_plc_poll = 0.0
+    trigger_bit = 0
+
+    print("\n[SYSTEM READY] Waiting for PLC trigger...")
+
+    try:
+        while True:
+            # ---- Grab a frame, and (rate-limited) poll the active program no. ----
+            ret, depth_raw, color_raw = cam.get_raw_frame()
+            if not ret: continue
+            color_frame = np.asanyarray(color_raw.get_data())
+
+            poll_plc_now = (time.time() - last_plc_poll) >= plc_poll_interval
+            if poll_plc_now and (not args.debug or plc_test_mode):
+                plc_pno = plc.read_word(plc_cfg['program_no_device'])
+                if plc_pno in detectors:
+                    current_program_no = plc_pno
+
+            # ---- Live preview window ----
+            render_live_view(color_frame, current_program_no, detectors, config,
+                             args, plc_test_mode, plc)
+
+            # ---- Keyboard: quit / 3D view / debug & PLC-test controls ----
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or key == ord('q'):
+                break
+
+            if key == ord('p'):
+                if getattr(transformer, "_last_geometries", None):
+                    print("[VIEW] Showing 3D point cloud — close window to continue.")
+                    transformer.show_collected_3d()
+                else:
+                    print("[VIEW] No trigger has run yet; nothing to show.")
+
+            manual_trigger = False
+            if args.debug:
+                if key == ord('b'):
+                    plc_test_mode = not plc_test_mode
+                    if not plc_test_mode:
+                        plc.write_bit(plc_cfg['trigger_test_device'], 0)
+                    print(f"\n[DEBUG] PLC test mode {'ON' if plc_test_mode else 'OFF'}")
+                elif ord('1') <= key <= ord('9'):
+                    n = key - ord('0')
+                    if plc_test_mode:
+                        plc.write_word(plc_cfg['program_no_test_device'], n)
+                        print(f"\n[PLC-TEST] Wrote program no. {n} -> {plc_cfg['program_no_test_device']}")
+                    elif n in detectors:
+                        current_program_no = n
+                        print(f"\n[DEBUG] Program No. set to {n} ({detectors[n][0]})")
+                    else:
+                        print(f"\n[DEBUG] No detector for program {n}; ignored")
+                elif key == ord('t'):
+                    if plc_test_mode:
+                        plc.write_bit(plc_cfg['trigger_test_device'], 1)
+                        time.sleep(0.1)
+                        plc.write_bit(plc_cfg['trigger_test_device'], 0)
+                        print(f"\n[PLC-TEST] Pulsed {plc_cfg['trigger_test_device']}")
+                    else:
+                        manual_trigger = True
+
+            # ---- Decide whether to start a scan this iteration ----
+            if poll_plc_now:
+                trigger_bit = plc.read_bit(plc_cfg['trigger_device'])[0]
+                last_plc_poll = time.time()
+            if not (trigger_bit == 1 or manual_trigger):
+                continue
+            trigger_bit = 0
+
+            # ---- Cycle start: go busy ----
+            set_status(plc, plc_cfg, ready=0, busy=1, complete=0, error=0)
+            plc.write_word(plc_cfg['error_code_device'], err['ok'])
+
+            program_no = current_program_no
+            if program_no is None or program_no not in detectors:
+                print(f"\n[ERROR] Cannot scan: program no. is {program_no}")
+                plc.write_word(plc_cfg['error_code_device'], err['invalid_program'])
+                set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
+                _wait_trigger_low(plc, plc_cfg)
+                continue
+
+            print(f"\n[TRIGGER] Program No. = {program_no}{'  (manual)' if manual_trigger else ''}")
+            prog_name, detector = detectors[program_no]
+            print(f"[RUN] Using program '{prog_name}'")
+
+            # Robot is parked at the photo pose now — read it live from the PLC and
+            # rebuild Cam->BASE. Fall back to the last/config pose if unavailable.
+            scan_pose = read_robot_scan_pose(plc, plc_cfg)
+            if scan_pose is not None:
+                H_CAM2BASE = build_cam2base(config['robot'], scan_pose)
+                print(f"[POSE] Scan pose from PLC: "
+                      f"X={scan_pose['x']*1000:.1f} Y={scan_pose['y']*1000:.1f} "
+                      f"Z={scan_pose['z']*1000:.1f} mm  "
+                      f"A={scan_pose['a']:.1f} B={scan_pose['b']:.1f} C={scan_pose['c']:.1f} deg")
+            else:
+                print("[POSE WARN] No robot pose from PLC (all-zero/read fail) — "
+                      "using config scan_pose.")
+
+            # ---- Capture the scan frame ----
+            ret, _, color_raw = cam.get_raw_frame()
+            if not ret:
+                plc.write_word(plc_cfg['error_code_device'], err['camera'])
+                set_status(plc, plc_cfg, ready=1, busy=0, complete=0, error=1)
+                _wait_trigger_low(plc, plc_cfg)
+                continue
+            scan_frame = np.asanyarray(color_raw.get_data())
+
+            # ---- Detect templates and keep the best per point ----
+            detected_pixels, detected_names, confidences, detected_homos, _ = detector.detect(
+                scan_frame, config['camera']['resolution_width'], config['camera']['resolution_height']
+            )
+            best = best_per_point(detector, detected_names, confidences)
+
+            best_indices = {entry['idx'] for entry in best.values()}
+            result_img = _build_trigger_result_grid(
+                scan_frame, detected_pixels, detected_names, confidences,
+                detected_homos, detector, best_indices,
+                header=f"TRIGGER  Program {program_no} ({prog_name})",
+            )
+            cv2.imshow("Trigger Result", result_img)
+            cv2.waitKey(1)
+
+            if not best:
+                print("\n[WARNING] No targets found.")
+                report_no_results(plc, plc_cfg, err, complete_pulse_sec)
+                continue
+
+            filtered_pixels, filtered_names, filtered_confs, filtered_points = [], [], [], []
+            for point in sorted(best):
+                entry = best[point]
+                filtered_pixels.append(detected_pixels[entry['idx']])
+                filtered_names.append(entry['name'])
+                filtered_confs.append(entry['conf'])
+                filtered_points.append(point)
+                print(f"[FILTER] {point} -> {entry['name']} (Conf: {entry['conf']:.2f}%)")
+
+            # ---- Lift the 2D hits to 6DOF using the point cloud ----
+            extracted_6dof = transformer.extract_3d_data(
+                filtered_pixels, filtered_names,
+                show_3d=False,
+            )
+
+            if not extracted_6dof:
+                report_no_results(plc, plc_cfg, err, complete_pulse_sec)
+                continue
+
+            num_targets = min(len(extracted_6dof), max_points)
+            plc.write_word(plc_cfg['amount_device'], num_targets)
+
+            memory_state = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "program_no": program_no,
+                "program_name": prog_name,
+                "targets": {}
+            }
+
+            # ---- Transform each target to BASE and write its PLC result slot ----
+            slot_idx = 0
+            for name, point, conf in zip(filtered_names, filtered_points, filtered_confs):
+                if name not in extracted_6dof or slot_idx >= num_targets:
+                    continue
+
+                slot_words, (x_out, y_out, z_out), (A_deg, B_deg, C_deg) = encode_target_pose(
+                    extracted_6dof[name], conf, H_CAM2BASE, ee_offset, conf_mul
+                )
+
+                plc.write_slot(
+                    plc_cfg['slot_base_device'], slot_idx, words_per_slot,
+                    slot_words,
+                )
+
+                x_mm, y_mm, z_mm = x_out * 1000.0, y_out * 1000.0, z_out * 1000.0
+                print(f"[PLC] slot {slot_idx} ({point}/{name})")
+                print(f"  base  : X={x_mm:+9.2f}mm Y={y_mm:+9.2f}mm Z={z_mm:+9.2f}mm")
+                print(f"          A={A_deg:+8.2f}° B={B_deg:+8.2f}° C={C_deg:+8.2f}°  Conf={conf:6.2f}%")
+                print(f"  sent  : {len(slot_words)} words (int32 x1000, mm/deg; Conf x{conf_mul})")
+
+                memory_state["targets"][point] = {
+                    "template": name,
+                    "X": round(x_out, 4), "Y": round(y_out, 4), "Z": round(z_out, 4),
+                    "A": round(A_deg, 2), "B": round(B_deg, 2), "C": round(C_deg, 2),
+                    "Confidence": round(conf, 2),
+                }
+                slot_idx += 1
+
+            with open(config['paths']['position_mem'], "w") as f:
+                json.dump(memory_state, f, indent=4)
+
+            # ---- Cycle done: pulse complete, then back to ready ----
+            print(f"[PLC] Wrote {num_targets} slot(s).")
+            if set_status(plc, plc_cfg, busy=0, complete=1, error=0):
+                _wait_trigger_low(plc, plc_cfg)
+            time.sleep(complete_pulse_sec)
+            set_status(plc, plc_cfg, ready=1, complete=0)
+            print("[CYCLE] Done. Ready for next trigger.\n")
+
+    except KeyboardInterrupt:
+        print("\n[INFO] Exiting program...")
+    finally:
+        set_status(plc, plc_cfg, ready=0, busy=0, complete=0, error=1)
+        plc.disconnect()
+        cam.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':
