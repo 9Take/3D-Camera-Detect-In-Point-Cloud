@@ -54,8 +54,37 @@ plc:
   max_points:       5
 
   heartbeat_interval_sec: 1.0
+  poll_interval_sec:      0.1    # how often to poll PLC trigger/program registers
+  complete_pulse_sec:     1.0    # hold complete=1 this long after ack so HMI can latch
   position_multiplier:    10000  # meters * 10000 -> int16
   confidence_multiplier:  100    # percent * 100  -> int16
+
+  # Values written to error_code_device
+  error_codes:
+    ok:              0
+    invalid_program: 1
+    no_targets:      2
+    camera:          3
+    internal:        99
+
+robot:
+  # Hand-eye calibration result: camera -> gripper (TCP) transform.
+  hand_eye_rotation:          # 3x3 R_CAM2GRIPPER
+    - [ 0.99851707,  0.04715875, -0.02719773]
+    - [-0.02715520, -0.00154225, -0.99963004]
+    - [-0.04718325,  0.99888622, -0.00025936]
+  hand_eye_translation:       # meters, T_CAM2GRIPPER
+    - -0.044947
+    - -0.075253
+    -  0.043377
+  # KUKA jog pose where the photo is captured (SmartPAD WORLD frame)
+  scan_pose:
+    x:  0.530   # m  (530.0 mm)
+    y:  0.015   # m  ( 15.0 mm)
+    z:  0.090   # m  ( 90.0 mm)
+    a: -90.0    # deg about Z (A)
+    b:  0.0     # deg about Y (B)
+    c: -180.0   # deg about X (C)
 
 paths:
   debug_dir:    data/templates/debug
