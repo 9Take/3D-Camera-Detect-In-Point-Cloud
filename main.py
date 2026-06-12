@@ -12,7 +12,7 @@ from communication.realsense import DepthCamera
 from communication.plc_comm import PLCCommunicator
 from core.detector import ObjectDetector
 from core.transformer import PointCloudTransformer
-from tools.plc_decode import encode_pose, int32_to_words
+from tools.plc_decode import encode_pose, int32_to_words, decode_pose
 
 
 print("\n[INIT] Initializing Systems...")
@@ -29,19 +29,30 @@ def kuka_abc_to_matrix(A, B, C):
     return R_z @ R_y @ R_x
 
 
-def build_cam2base(robot_cfg):
+def build_cam2base(robot_cfg, scan_pose):
     """ยุบรวมผลแฮนด์-อาย (Cam -> Gripper) กับพิกัดจุดจอดถ่ายภาพของหุ่นยนต์
-    (Gripper -> BASE) เป็นเมทริกซ์ 4x4 ก้อนเดียว: จากพิกัดกล้องสู่พิกัดฐานหุ่นยนต์."""
+    (Gripper -> BASE) เป็นเมทริกซ์ 4x4 ก้อนเดียว: จากพิกัดกล้องสู่พิกัดฐานหุ่นยนต์.
+    scan_pose: dict {x, y, z (เมตร), a, b, c (องศา)} — จาก config หรืออ่านสดจาก PLC."""
     H_cam2gripper = np.eye(4)
     H_cam2gripper[0:3, 0:3] = np.array(robot_cfg['hand_eye_rotation'])
     H_cam2gripper[0:3, 3:4] = np.array(robot_cfg['hand_eye_translation']).reshape(3, 1)
 
-    pose = robot_cfg['scan_pose']
     H_gripper2base = np.eye(4)
-    H_gripper2base[0:3, 0:3] = kuka_abc_to_matrix(pose['a'], pose['b'], pose['c'])
-    H_gripper2base[0:3, 3:4] = np.array([[pose['x']], [pose['y']], [pose['z']]])
+    H_gripper2base[0:3, 0:3] = kuka_abc_to_matrix(scan_pose['a'], scan_pose['b'], scan_pose['c'])
+    H_gripper2base[0:3, 3:4] = np.array([[scan_pose['x']], [scan_pose['y']], [scan_pose['z']]])
 
     return H_gripper2base @ H_cam2gripper
+
+
+def read_robot_scan_pose(plc, plc_cfg):
+    """อ่านพิกัดจุดจอดถ่ายภาพสดจาก PLC (รีจิสเตอร์/ฟอร์แมตเดียวกับ ArUco calibration).
+    PLC ส่งมาเป็น int32 x1000 หน่วย mm/deg. คืน dict {x,y,z (เมตร), a,b,c (องศา)}
+    หรือ None ถ้าอ่านไม่ได้/ยังไม่มีค่า (อ่านกลับมาเป็นศูนย์ทั้งหมด)."""
+    words = plc.read_words(plc_cfg['pose_device'], plc_cfg['pose_word_count'])
+    x, y, z, a, b, c = decode_pose(words, plc_cfg.get('pose_word_swap', False))  # mm/deg
+    if x == 0.0 and y == 0.0 and z == 0.0:
+        return None
+    return {'x': x / 1000.0, 'y': y / 1000.0, 'z': z / 1000.0, 'a': a, 'b': b, 'c': c}
 
 
 def cam_point_to_base(H_cam2base, x_cam, y_cam, z_cam, ee_offset):
@@ -110,7 +121,9 @@ def main():
     plc_cfg = config['plc']
     err = plc_cfg['error_codes']
     complete_pulse_sec = plc_cfg['complete_pulse_sec']
-    H_CAM2BASE = build_cam2base(config['robot'])
+    # Default transform from the static config scan_pose; refreshed live from the
+    # PLC each trigger (falls back to this if the PLC read is unavailable).
+    H_CAM2BASE = build_cam2base(config['robot'], config['robot']['scan_pose'])
     ee = config['robot']['ee_offset']
     ee_offset = (ee['x'], ee['y'], ee['z'])
     os.makedirs(config['paths']['save_dir'], exist_ok=True)
@@ -265,6 +278,19 @@ def main():
             print(f"\n[TRIGGER] Program No. = {program_no}{'  (manual)' if manual_trigger else ''}")
             prog_name, detector = detectors[program_no]
             print(f"[RUN] Using program '{prog_name}'")
+
+            # Robot is parked at the photo pose now — read it live from the PLC and
+            # rebuild Cam->BASE. Fall back to the last/config pose if unavailable.
+            scan_pose = read_robot_scan_pose(plc, plc_cfg)
+            if scan_pose is not None:
+                H_CAM2BASE = build_cam2base(config['robot'], scan_pose)
+                print(f"[POSE] Scan pose from PLC: "
+                      f"X={scan_pose['x']*1000:.1f} Y={scan_pose['y']*1000:.1f} "
+                      f"Z={scan_pose['z']*1000:.1f} mm  "
+                      f"A={scan_pose['a']:.1f} B={scan_pose['b']:.1f} C={scan_pose['c']:.1f} deg")
+            else:
+                print("[POSE WARN] No robot pose from PLC (all-zero/read fail) — "
+                      "using config scan_pose.")
 
             ret, _, color_raw = cam.get_raw_frame()
             if not ret:

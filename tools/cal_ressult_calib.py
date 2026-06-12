@@ -4,21 +4,24 @@ import cv2
 
 # 1. โหลดไฟล์ CSV ที่คุณเซฟไว้
 # แก้ไขพาธไฟล์ให้ตรงกับเครื่องของคุณครับ
-csv_path = "./output/capture_log.csv"
+csv_path = "./calibration/capture_log.csv"
 df = pd.read_csv(csv_path)
 
 print(f"Loaded {len(df)} points for optimization...")
 
 # กล้อง (R/t) และ translation ของหุ่นยนต์ อ่านจาก npz — CSV ไม่ได้เก็บเมทริกซ์การหมุน
-# npz = np.load("./output/hand_eye_result.npz")
+# npz = np.load("./calibration/hand_eye_result.npz")
 # t_target2cam = [npz['t_target2cam'][i] for i in range(len(df))]
 # t_gripper2base = [npz['t_gripper2base'][i] for i in range(len(df))]
 # R_target2cam = [npz['R_target2cam'][i] for i in range(len(df))]
 
 # ✅ โค้ดใหม่ (ดึงระยะหุ่นยนต์จาก df ใน CSV โดยตรง เพื่อให้ตรงรอบกับค่า A, B, C)
-npz = np.load("./output/hand_eye_result.npz")
-t_target2cam = [npz['t_target2cam'][i] for i in range(len(df))]
-R_target2cam = [npz['R_target2cam'][i] for i in range(len(df))]
+# ⚠️ จับคู่ NPZ กับ CSV ด้วยคอลัมน์ 'idx' (ไม่ใช่ range(len(df))) เพื่อให้ลำดับตรงกันเสมอ
+#    แม้จะลบบางโพสที่ flag ทิ้งออกจาก CSV ข้อมูลกล้องก็ยังตรงรอบกับ X,Y,Z,A,B,C
+npz = np.load("./calibration/hand_eye_result.npz")
+idxs = df['idx'].astype(int).tolist()
+t_target2cam = [npz['t_target2cam'][i] for i in idxs]
+R_target2cam = [npz['R_target2cam'][i] for i in idxs]
 
 # ดึงพิกัด X, Y, Z ของหุ่นยนต์จากคอลัมน์ใน CSV แทน
 # ⚠️ หมายเหตุ: ให้เปลี่ยนชื่อคอลัมน์ 'X', 'Y', 'Z' ให้ตรงกับที่คุณเซฟไว้ใน capture_log.csv 

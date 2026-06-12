@@ -9,6 +9,15 @@ charuco:                 # hand-eye calibration board (tools/aruco_calibate.py)
   marker_length: 0.025  # meters; ArUco marker side inside the white squares
   dictionary: DICT_6X6_250
 
+calibration:              # hand-eye capture settings (tools/aruco_calibate.py)
+  total_poses:         16    # number of robot poses to collect before solving
+  min_charuco_corners: 8     # min chessboard corners needed for a stable board pose
+  max_reproj_px:       2.0   # reject a board pose whose reprojection error exceeds this (px)
+  settle_sec:          0.5   # wait this long after trigger before recording (robot settle)
+  pose_stable_tol:     0.5   # max change (mm/deg) between two consecutive pose reads
+  debug_raw_pose:      true  # print raw words + both decodings each capture
+  debug_handshake:     true  # print trigger/ack bit + state changes
+
 programs:
   1:
     name: ProgramA
@@ -30,6 +39,17 @@ plc:
   # PLC -> PC (inputs to the vision system)
   trigger_device:    M1500   # BIT  - start scan
   program_no_device: D1100   # WORD - which program/model to run
+
+  # PLC -> PC (live robot pose feedback; KUKA writes its current pose here,
+  # same registers/format the ArUco hand-eye calibration reads)
+  pose_device:     D2000   # WORD - start of 6 int32 (X Y Z A B C), mm/deg x1000
+  pose_word_count: 12      # 6 double-words * 2 words each
+  pose_word_swap:  false   # true if KUKA REALs come back high-word-first
+
+  # Hand-eye calibration handshake (tools/aruco_calibate.py only; separate from the
+  # runtime trigger_device above)
+  calib_trigger_device: M2000   # BIT - PLC sets =1 when the KUKA has reached the pose
+  calib_ack_device:     M2001   # BIT - PC sets =1 after recording ("camera complete ok")
 
   # PC -> PLC (debug-only PLC-side test registers; written from 'b' test mode)
   program_no_test_device: D1500   # WORD - PC writes selected program no. here
@@ -77,7 +97,10 @@ robot:
     - -0.044947
     - -0.075253
     -  0.043377
-  # KUKA jog pose where the photo is captured (SmartPAD WORLD frame)
+  # FALLBACK photo pose (SmartPAD WORLD frame). At runtime main.py reads the live
+  # robot pose from the PLC (plc.pose_device) on every trigger; this static pose is
+  # only used at startup and if that PLC read fails / returns all-zero. Set it to the
+  # real parked photo pose so a failed read doesn't send the robot to a wrong spot.
   scan_pose:
     x:  0.530   # m  (530.0 mm)
     y:  0.015   # m  ( 15.0 mm)
@@ -85,13 +108,15 @@ robot:
     a: -90.0    # deg about Z (A)
     b:  0.0     # deg about Y (B)
     c: -180.0   # deg about X (C)
+
+
   # Stick end-effector tip offset from the camera, measured in the CAMERA frame
   # (X right, Y down, Z forward into the scene), meters. Added to each detected
   # target point so the reported X/Y/Z lands at the stick tip (orientation unchanged).
   ee_offset:
     x: 0.0   # m
     y: 0.0   # m
-    z: -0.290   # m
+    z: -0.290  # m
 
 paths:
   debug_dir:    data/templates/debug

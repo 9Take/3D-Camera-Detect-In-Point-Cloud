@@ -20,26 +20,31 @@ from tools.plc_decode import decode_pose
 from tools.board_detect import build_charuco, detect_board_pose
 
 # ---------------------------------------------------------------------------
-# Config  (edit the robot-handshake registers to match your PLC program)
+# Config — all calibration settings live in config.yaml (calibration: + plc:)
 # ---------------------------------------------------------------------------
-TRIGGER_DEVICE = "M2000"   # BIT  - PLC sets =1 when the KUKA has reached the pose
-ACK_DEVICE = "M2001"       # BIT  - PC sets =1 after recording ("camera complete ok")
-POSE_DEVICE = "D2000"      # WORD - start of 6 double-words: X Y Z A B C (32-bit each)
-POSE_WORD_COUNT = 12       # 6 double-words * 2 words each
-TOTAL_POINTS_NEEDED = 16
-MIN_CHARUCO_CORNERS = 8     # min chessboard corners needed for a stable board pose
-MAX_REPROJ_PX = 2.0        # reject a board pose whose reprojection error exceeds this (kills 180-deg flips)
-SETTLE_SEC = 0.5           # wait this long after M2000=1 before recording (robot settle + stable pose words)
-POSE_STABLE_TOL = 0.5      # max change (mm/deg) allowed between two consecutive pose reads before recording
-
-WORD_SWAP = False           # set True if KUKA REALs come back high-word-first (fixes nan/0.0 decodes)
-DEBUG_RAW_POSE = True       # print raw words + both decodings each capture; set False once verified
-DEBUG_HANDSHAKE = True      # print M2000/M2001 + what the loop is waiting for on every change
-
-
 def load_config():
     with open(os.path.join(PROJECT_ROOT, "config.yaml"), "r") as f:
         return yaml.safe_load(f)
+
+
+CONFIG = load_config()
+_plc = CONFIG["plc"]
+_calib = CONFIG["calibration"]
+
+# PLC handshake / pose registers (calibration-specific; runtime trigger is plc.trigger_device)
+TRIGGER_DEVICE = _plc["calib_trigger_device"]   # BIT  - PLC sets =1 when the KUKA has reached the pose
+ACK_DEVICE = _plc["calib_ack_device"]           # BIT  - PC sets =1 after recording ("camera complete ok")
+POSE_DEVICE = _plc["pose_device"]               # WORD - start of 6 double-words: X Y Z A B C (32-bit each)
+POSE_WORD_COUNT = _plc["pose_word_count"]       # 6 double-words * 2 words each
+WORD_SWAP = _plc["pose_word_swap"]              # True if KUKA REALs come back high-word-first
+
+TOTAL_POINTS_NEEDED = _calib["total_poses"]
+MIN_CHARUCO_CORNERS = _calib["min_charuco_corners"]  # min chessboard corners for a stable board pose
+MAX_REPROJ_PX = _calib["max_reproj_px"]              # reject a board pose above this reproj error (kills 180-deg flips)
+SETTLE_SEC = _calib["settle_sec"]                    # wait after trigger before recording (robot settle + stable words)
+POSE_STABLE_TOL = _calib["pose_stable_tol"]          # max change (mm/deg) between two consecutive pose reads
+DEBUG_RAW_POSE = _calib["debug_raw_pose"]            # print raw words + both decodings each capture
+DEBUG_HANDSHAKE = _calib["debug_handshake"]          # print trigger/ack bit + what the loop is waiting on
 
 
 def read_robot_pose(plc, verbose=DEBUG_RAW_POSE):
@@ -92,7 +97,7 @@ def _waiting_for(state, trigger, board_ok, n_corners):
 
 
 def main():
-    config = load_config()
+    config = CONFIG
     plc_cfg = config["plc"]
     cam_cfg = config["camera"]
     ch_cfg = config.get("charuco", {})
@@ -103,7 +108,7 @@ def main():
     marker_mm = float(ch_cfg.get("marker_length", 0.0153)) * 1000.0
     dict_name = ch_cfg.get("dictionary", "DICT_6X6_250")
 
-    save_dir = os.path.join(PROJECT_ROOT, "output")
+    save_dir = os.path.join(PROJECT_ROOT, "calibration")
     os.makedirs(save_dir, exist_ok=True)
 
     board, charuco_detector = build_charuco(squares_x, squares_y, square_mm, marker_mm, dict_name)
