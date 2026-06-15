@@ -1,4 +1,4 @@
-# 👋 Heat Exchanger 3D Vision System
+# 👋 3D Guidance Robot — Camera 2D→3D Point Cloud Detection
 
 > 🌐 Language: **English** | [ไทย](README.th.md)
 

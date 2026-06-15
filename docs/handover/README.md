@@ -1,7 +1,7 @@
 # 👋 Handover Guide — 3D Guidance Robot
 
 > This folder explains how the whole system works, broken
-> down by area, so you can keep developing it without me. Read this page first, then
+> down by area. Read this page first, then
 > jump to the area you need.
 
 ---
@@ -75,25 +75,7 @@ There is also a deeper, code-line-referenced write-up in
 │   └── logs/               ← position_mem.json (last scan), current_detect.json
 │
 ├── docs/                   ← you are here
-└── memory/                 ← notes on two hard-won bugs (READ THESE, see below)
 ```
-
----
-
-## ⚠️ Two bugs that cost days — read before touching calibration
-
-These are in [../../memory/](../../memory/) and are repeated in [calibration.md](calibration.md):
-
-1. **OpenCV 4.7.0 `CharucoBoard.matchImagePoints()` is broken.** It scrambles the
-   point pairing and gives garbage board poses (~1400 px reprojection error). We bypass
-   it and build correspondences from `getChessboardCorners()`. Don't "fix" it back.
-
-2. **Use `PARK`, not `TSAI`, for hand-eye solving.** Our capture poses have large
-   rotations between them, where TSAI's solver is numerically fragile (gave 351 mm error
-   vs PARK's 29 mm on the *same* good data). The solver was the problem, not the data.
-
----
-
 ## How to research this project when you're stuck
 
 1. **Start at the data flow**, not a file. Read [main-loop.md](main-loop.md) — it walks

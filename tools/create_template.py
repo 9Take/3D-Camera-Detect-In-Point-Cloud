@@ -22,7 +22,8 @@ resolution_width = config['camera']['resolution_width']
 resolution_height = config['camera']['resolution_height']
 
 def _resolve_program(program_arg):
-    """Accept a program number ('1') or name ('ProgramA') and return (program_no, program_def)."""
+    """Accept a program number ('1'), name ('ProgramA' / short 'A'), or any new name.
+    Unknown names create an ad-hoc program saved under data/templates/<name>."""
     programs = config['programs']
     # numeric lookup
     try:
@@ -30,12 +31,15 @@ def _resolve_program(program_arg):
         if pno in programs: return pno, programs[pno]
     except ValueError:
         pass
-    # name lookup
+    # name lookup (accept full name "ProgramA" or short "A")
     for pno, pdef in programs.items():
-        if pdef['name'] == program_arg:
+        if pdef['name'] == program_arg or pdef['name'] == "Program" + program_arg:
             return pno, pdef
-    raise SystemExit(f"[ERROR] Program '{program_arg}' not found in config.yaml. "
-                     f"Available: {[(k, v['name']) for k, v in programs.items()]}")
+    # not in config.yaml -> create ad-hoc program, prefixing "Program" (e.g. "Z" -> "ProgramZ")
+    name = program_arg if program_arg.startswith("Program") else "Program" + program_arg
+    pdef = {'name': name, 'template_dir': os.path.join('data/templates', name)}
+    print(f"[INFO] Program '{name}' not in config.yaml; saving to {pdef['template_dir']}")
+    return name, pdef
 
 
 def get_params():
@@ -49,14 +53,16 @@ def get_params():
     parser.add_argument('--debug', action='store_true', help='เปิดโหมด Debug เพื่อดู 3D Point Cloud')
     args = parser.parse_args()
 
-    program_arg = args.program or input("Program (no. or name) [default: 1]: ").strip() or "1"
+    print("\n=== Create Template (press Enter to accept [default]) ===")
+    program_arg = args.program or input("  Program   (e.g. A, 7458A)  [default: A]: ").strip() or "A"
     pno, pdef = _resolve_program(program_arg)
 
-    point_name = args.point or input("Point name [default: PointA]: ").strip() or "PointA"
+    point_name = args.point or input("  Point     (e.g. A, B, Bob) [default: A]: ").strip() or "A"
     if not point_name.startswith("Point"):
         point_name = "Point" + point_name  # accept e.g. "A" -> "PointA"
 
-    variant = args.variant or input("Variant tag [default: 1]: ").strip() or "1"
+    variant = args.variant or input("  Sub-point (e.g. .1, .2)     [default: 1]: ").strip() or "1"
+    variant = variant.lstrip(".")  # accept ".1" or "1" -> "1"
     target_name = f"{point_name}.{variant}"  # used for filenames and meta target_name field
 
     target_dir = os.path.join(pdef['template_dir'], point_name)

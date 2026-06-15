@@ -11,8 +11,8 @@ The `communication/` package is the bridge to hardware:
 
 ## 3.1 `realsense.py` — `DepthCamera`
 
-Thin wrapper around `pyrealsense2`, configured specifically for the **shiny copper
-surfaces** of heat-exchanger plates (which are hard for depth cameras).
+Thin wrapper around `pyrealsense2`, configured specifically for **shiny, specular
+metal surfaces** (which are hard for depth cameras).
 
 Key setup in `__init__`:
 - Reads `depth_scale` from the device (raw depth units → meters).

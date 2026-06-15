@@ -2,7 +2,7 @@
 
 > 🌐 ภาษา: [English](methodology.md) | **ไทย**
 
-ระเบียบวิธีแบบครบวงจรของระบบ Vision สำหรับ Heat Exchanger: ตั้งแต่ trigger ของ PLC ไปจนถึง
+ระเบียบวิธีแบบครบวงจรของระบบ Vision สำหรับหุ่นยนต์นำทาง 3 มิติ (3D Guidance Robot): ตั้งแต่ trigger ของ PLC ไปจนถึง
 pose 6-DoF เต็มที่เขียนกลับเข้ารีจิสเตอร์ PLC ระบบนี้ผสาน detector แบบจับคู่ template 2 มิติ
 เข้ากับ depth จากกล้อง Intel RealSense, ยกแต่ละจุดที่เจอขึ้นเป็น pose 3 มิติ, แล้วแปลงจาก
 **เฟรมกล้องไปเป็นเฟรมฐานหุ่นยนต์** (ผ่านการคาลิเบรต hand-eye) ก่อนส่งให้ PLC/หุ่นยนต์
@@ -66,7 +66,7 @@ data/templates/ProgramA/
 ## 3. การรับเฟรม (RealSense)
 
 [communication/realsense.py](../communication/realsense.py) ตั้งค่ากล้องให้ depth ใช้งานได้
-บนทองแดงสะท้อนแสงของแผ่น heat-exchanger:
+บนพื้นผิวโลหะที่สะท้อนแสง (specular):
 
 1. **visual preset แบบ High-Density** (`rs.option.visual_preset = 4`) — เพิ่มความครอบคลุมบน
    พื้นผิว texture ต่ำ/สะท้อนแสง

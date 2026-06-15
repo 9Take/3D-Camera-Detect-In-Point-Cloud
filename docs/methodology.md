@@ -2,7 +2,7 @@
 
 > 🌐 Language: **English** | [ไทย](methodology.th.md)
 
-End-to-end methodology of the Heat Exchanger Vision System: from PLC trigger to
+End-to-end methodology of the 3D Guidance Robot vision system: from PLC trigger to
 a full 6-DoF pose written back into PLC registers. The system pairs a 2D
 template-matching detector with depth from an Intel RealSense camera, lifts each
 hit to a 3D pose, and transforms it from the **camera frame into the robot base
@@ -71,7 +71,7 @@ lookup.
 ## 3. Frame Acquisition (RealSense)
 
 [communication/realsense.py](../communication/realsense.py) configures the
-camera so that depth is usable on the shiny copper of heat-exchanger plates:
+camera so that depth is usable on shiny, specular metal surfaces:
 
 1. **High-Density visual preset** (`rs.option.visual_preset = 4`) — improves
    coverage on low-texture / specular surfaces.
