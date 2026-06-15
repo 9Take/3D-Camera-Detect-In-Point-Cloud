@@ -1,5 +1,7 @@
 # 6. Configuration — `config.yaml`
 
+> 🌐 Language: **English** | [ไทย](configuration.th.md)
+
 Every runtime setting lives in [`config.yaml`](../../config.yaml). No constants are
 hard-coded in `main.py` that you'd normally need to change (a couple of detector tuning
 values are in `core/detector.py` — see [core.md](core.md)). This page explains every block.

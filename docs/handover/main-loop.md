@@ -1,5 +1,7 @@
 # 7. Main Loop — How It All Fits Together
 
+> 🌐 Language: **English** | [ไทย](main-loop.th.md)
+
 [`main.py`](../../main.py) is the orchestrator. If you understand this file, you understand
 the system. Everything else is a module it calls. Read this with `main.py` open beside it.
 

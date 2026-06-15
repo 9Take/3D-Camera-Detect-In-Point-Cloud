@@ -1,5 +1,7 @@
 # Solution Methodology
 
+> 🌐 Language: **English** | [ไทย](methodology.th.md)
+
 End-to-end methodology of the Heat Exchanger Vision System: from PLC trigger to
 a full 6-DoF pose written back into PLC registers. The system pairs a 2D
 template-matching detector with depth from an Intel RealSense camera, lifts each

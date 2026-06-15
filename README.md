@@ -1,5 +1,7 @@
 # 👋 Heat Exchanger 3D Vision System
 
+> 🌐 Language: **English** | [ไทย](README.th.md)
+
 > This README explains how the whole system works, broken down by area, so a new
 > engineer can keep developing it. Read this page first, then jump to the area you need.
 

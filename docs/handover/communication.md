@@ -1,5 +1,7 @@
 # 3. Communication — Camera & PLC
 
+> 🌐 Language: **English** | [ไทย](communication.th.md)
+
 The `communication/` package is the bridge to hardware:
 
 - [`communication/realsense.py`](../../communication/realsense.py) — the camera.

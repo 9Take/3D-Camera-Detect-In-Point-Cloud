@@ -1,5 +1,7 @@
 # 5. Tools — Helper Scripts
 
+> 🌐 Language: **English** | [ไทย](tools.th.md)
+
 The `tools/` folder holds standalone helpers. Two of them (`plc_decode`, `geometry`,
 `board_detect`) are **pure libraries** imported by the runtime/calibration; the other two
 are **scripts you run by hand**.

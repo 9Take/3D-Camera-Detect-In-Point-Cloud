@@ -1,5 +1,7 @@
 # 4. Calibration — Hand-Eye
 
+> 🌐 Language: **English** | [ไทย](calibration.th.md)
+
 This is the most error-prone part of the whole system. Read this fully before running it.
 
 **File:** [`calibration/aruco_calibate.py`](../../calibration/aruco_calibate.py)

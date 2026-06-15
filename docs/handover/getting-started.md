@@ -1,5 +1,7 @@
 # 1. Getting Started
 
+> 🌐 Language: **English** | [ไทย](getting-started.th.md)
+
 How to install, run, and develop the system. Start here on day one.
 
 ---

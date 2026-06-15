@@ -1,5 +1,7 @@
 # 2. Core — The Vision Brain
 
+> 🌐 Language: **English** | [ไทย](core.th.md)
+
 The `core/` package is where pixels become 3D poses. Two files:
 
 - [`core/detector.py`](../../core/detector.py) — **2D**: find taught features in the color image.
