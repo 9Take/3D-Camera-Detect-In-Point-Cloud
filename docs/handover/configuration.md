@@ -87,7 +87,7 @@ plc:
 
   amount_device: D1002        # PC→PLC results
   slot_base_device: D1003
-  words_per_slot: 4           # ⚠️ see note below — main.py uses 14
+  words_per_slot: 14          # 7 int32: X Y Z A B C Conf (matches main.py)
   max_points: 5
 
   heartbeat_interval_sec: 1.0
@@ -98,11 +98,11 @@ plc:
   error_codes: { ok: 0, invalid_program: 1, no_targets: 2, camera: 3, internal: 99 }
 ```
 
-> ⚠️ **`words_per_slot` mismatch:** config says `4`, but `main.py` overrides it to **14**
-> internally because it now sends full 6-DOF (X Y Z A B C Conf) as int32. The
-> `position_multiplier` (10000) is also a leftover from the old int16 path — the current
-> code scales pose by ×1000 via `tools/plc_decode.py`. Trust the code: **14 words/slot,
-> int32 ×1000.** (Cleaning up these stale config keys is a fair small task for you.)
+> Note: `words_per_slot` is now `14` to match `main.py`, but the value is
+> documentation-only — `main.py` hard-codes **14 words/slot** and sends full 6-DOF
+> (X Y Z A B C Conf) as int32. The `position_multiplier` (10000) is a leftover from the
+> old int16 path and is unused — the current code scales pose by ×1000 via
+> `tools/plc_decode.py`. Trust the code: **14 words/slot, int32 ×1000.**
 
 ---
 

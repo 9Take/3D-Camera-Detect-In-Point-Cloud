@@ -64,13 +64,15 @@ plc:
   status_complete_device: M1003 # BIT - results written, awaiting ack
 
   # PC -> PLC (results)
+  # Each slot = 7 int32 doublewords (low-word-first, value x1000, mm/deg):
+  #   +0 X  +2 Y  +4 Z  +6 A  +8 B  +10 C  +12 Conf   => 14 words/slot
   # Layout from slot_base_device (shared across all programs):
-  #   base+0..3  = slot1 (X, Y, Z, Conf)
-  #   base+4..7  = slot2 (X, Y, Z, Conf)
+  #   base+0..13  = slot1
+  #   base+14..27 = slot2
   #   ...
   amount_device:    D1002   # WORD - number of valid points this cycle
   slot_base_device: D1003   # WORD - first register of slot data
-  words_per_slot:   4       # X, Y, Z, Conf
+  words_per_slot:   14      # 7 int32: X, Y, Z, A, B, C, Conf
   max_points:       5
 
   heartbeat_interval_sec: 1.0

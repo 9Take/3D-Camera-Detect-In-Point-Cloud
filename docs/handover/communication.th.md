@@ -109,10 +109,9 @@ slot k เริ่มที่ D1003 + k*14
 ```
 สูงสุด `max_points = 5` slot
 
-> ⚠️ **ระวัง:** `config.yaml` มี `words_per_slot: 4` แต่ `main.py` override เป็น **14**
-> ภายในโค้ด (`words_per_slot = 14`, ดูบรรทัด ~358) เพราะตอนนี้ส่ง 6-DOF เต็มเป็น int32
-> ไม่ใช่แค่ X/Y/Z/Conf เป็น int16 คำอธิบาย 4-word ใน `methodology.md` มาจากดีไซน์เก่า
-> เชื่อโค้ด: **14 words, int32, X Y Z A B C Conf**
+> หมายเหตุ: ตอนนี้ `config.yaml` ตั้ง `words_per_slot: 14` ให้ตรงกับโครงสร้างนี้แล้ว แต่ค่านี้
+> เป็นเอกสารประกอบเท่านั้น — `main.py` hard-code `words_per_slot = 14` (ดูบรรทัด ~358) และส่ง
+> 6-DOF เต็มเป็น int32 แหล่งอ้างอิงจริงคือโค้ด: **14 words, int32, X Y Z A B C Conf**
 
 ### Error codes (`D1001`)
 | Code | ความหมาย |

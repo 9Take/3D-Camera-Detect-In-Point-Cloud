@@ -257,10 +257,11 @@ both directions:
 | A / B / C      | × 1000  | degrees → millidegrees int32 |
 | Confidence     | × 100   | percent × 100, int32  |
 
-> Note: `config.yaml` still carries legacy keys `position_multiplier: 10000` and
-> `words_per_slot: 4` from the earlier INT16/X-Y-Z-Conf design. The current code
-> ignores them — it hard-codes **14 words/slot** ([main.py:358](../main.py#L358))
-> and scales via `plc_decode`. They are stale and safe to clean up.
+> Note: `config.yaml` now sets `words_per_slot: 14` to match the present design,
+> but the value is documentation-only — `main.py` hard-codes **14 words/slot**
+> ([main.py:358](../main.py#L358)) and scales via `plc_decode`. The legacy
+> `position_multiplier: 10000` key is unused (the actual scale is ×1000 via
+> `POSE_SCALE` in `plc_decode`) and is safe to clean up.
 
 Slot layout from `D1003` (`slot_base_device`), **14 words (7 int32) per slot**:
 

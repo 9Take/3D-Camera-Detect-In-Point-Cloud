@@ -236,10 +236,11 @@ latch ได้ทัน
 | A / B / C | × 1000 | องศา → มิลลิองศา int32 |
 | Confidence | × 100 | เปอร์เซ็นต์ × 100, int32 |
 
-> หมายเหตุ: `config.yaml` ยังมี key ตกค้าง `position_multiplier: 10000` และ
-> `words_per_slot: 4` จากดีไซน์ INT16/X-Y-Z-Conf เดิม โค้ดปัจจุบันเพิกเฉยต่อมัน — มัน hard-code
-> **14 words/slot** ([main.py:358](../main.py#L358)) และสเกลผ่าน `plc_decode` ทั้งสอง key
-> ตกค้างแล้วและลบทิ้งได้อย่างปลอดภัย
+> หมายเหตุ: ตอนนี้ `config.yaml` ตั้ง `words_per_slot: 14` ให้ตรงกับดีไซน์ปัจจุบันแล้ว
+> แต่ค่านี้เป็นเอกสารประกอบเท่านั้น — `main.py` hard-code **14 words/slot**
+> ([main.py:358](../main.py#L358)) และสเกลผ่าน `plc_decode` ส่วน key `position_multiplier: 10000`
+> ที่ตกค้างนั้นไม่ถูกใช้งาน (สเกลจริงคือ ×1000 ผ่าน `POSE_SCALE` ใน `plc_decode`)
+> และลบทิ้งได้อย่างปลอดภัย
 
 โครงสร้าง slot จาก `D1003` (`slot_base_device`), **14 words (7 int32) ต่อ slot**:
 

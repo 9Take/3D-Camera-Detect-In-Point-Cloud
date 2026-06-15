@@ -109,10 +109,10 @@ slot k starts at D1003 + k*14
 ```
 Up to `max_points = 5` slots.
 
-> ⚠️ **Watch this:** `config.yaml` has `words_per_slot: 4`, but `main.py` overrides it to
-> **14** internally (`words_per_slot = 14`, see line ~358) because it now sends full 6-DOF
-> as int32, not just X/Y/Z/Conf as int16. The `methodology.md` 4-word description is from
-> the older design. Trust the code: **14 words, int32, X Y Z A B C Conf.**
+> Note: `config.yaml` now sets `words_per_slot: 14` to match this layout, but the value
+> is documentation-only — `main.py` hard-codes `words_per_slot = 14` (see line ~358) and
+> sends the full 6-DOF pose as int32. The source of truth is the code:
+> **14 words, int32, X Y Z A B C Conf.**
 
 ### Error codes (`D1001`)
 | Code | Meaning |

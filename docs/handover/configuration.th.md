@@ -87,7 +87,7 @@ plc:
 
   amount_device: D1002        # ผลลัพธ์ PC→PLC
   slot_base_device: D1003
-  words_per_slot: 4           # ⚠️ ดูหมายเหตุด้านล่าง — main.py ใช้ 14
+  words_per_slot: 14          # 7 int32: X Y Z A B C Conf (ตรงกับ main.py)
   max_points: 5
 
   heartbeat_interval_sec: 1.0
@@ -98,11 +98,10 @@ plc:
   error_codes: { ok: 0, invalid_program: 1, no_targets: 2, camera: 3, internal: 99 }
 ```
 
-> ⚠️ **`words_per_slot` ไม่ตรงกัน:** config เขียน `4` แต่ `main.py` override เป็น **14**
-> ภายในโค้ด เพราะตอนนี้ส่ง 6-DOF เต็ม (X Y Z A B C Conf) เป็น int32 ส่วน
-> `position_multiplier` (10000) ก็เป็นของตกค้างจากเส้นทาง int16 เก่า — โค้ดปัจจุบันสเกล pose
-> ด้วย ×1000 ผ่าน `tools/plc_decode.py` เชื่อโค้ด: **14 words/slot, int32 ×1000**
-> (การเคลียร์ key config ที่ตกค้างเหล่านี้เป็นงานเล็ก ๆ ที่เหมาะกับคุณ)
+> หมายเหตุ: ตอนนี้ `words_per_slot` เป็น `14` ให้ตรงกับ `main.py` แล้ว แต่ค่านี้เป็นเอกสาร
+> ประกอบเท่านั้น — `main.py` hard-code **14 words/slot** และส่ง 6-DOF เต็ม (X Y Z A B C Conf)
+> เป็น int32 ส่วน `position_multiplier` (10000) เป็นของตกค้างจากเส้นทาง int16 เก่าและไม่ถูกใช้งาน
+> — โค้ดปัจจุบันสเกล pose ด้วย ×1000 ผ่าน `tools/plc_decode.py` เชื่อโค้ด: **14 words/slot, int32 ×1000**
 
 ---
 
