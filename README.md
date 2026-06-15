@@ -45,7 +45,6 @@ There is also a deeper, code-line-referenced write-up in
 ```
 3D-Camera-Detect-In-Point-Cloud/
 ├── main.py                 ← runtime entry point. THIS is what runs in production.
-├── main3.py                ← LEGACY older version. Do not use; kept for reference only.
 ├── config.yaml             ← all settings (camera, PLC registers, programs, calibration)
 ├── requirements.txt        ← Python deps (Python 3.8)
 ├── Dockerfile / docker-compose.yml
