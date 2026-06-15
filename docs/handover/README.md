@@ -1,4 +1,4 @@
-# 👋 Handover Guide — Heat Exchanger 3D Vision System
+# 👋 Handover Guide — 3D Guidance Robot
 
 > This folder explains how the whole system works, broken
 > down by area, so you can keep developing it without me. Read this page first, then
