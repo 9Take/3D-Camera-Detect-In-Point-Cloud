@@ -26,7 +26,7 @@
 ## วิธีการแบบภาพเดียวจบ
 
 เราวาง **ChArUco board** (กระดานหมากรุกที่มี ArUco marker) ตรึงไว้ในโลก แล้วขยับหุ่นยนต์ไปยัง
-~16 pose ที่แตกต่างกัน ที่แต่ละ pose เราบันทึกสองอย่าง:
+~16-20 pose ที่แตกต่างกัน ที่แต่ละ pose เราบันทึกสองอย่าง:
 - **pose หุ่นยนต์** (gripper→base) อ่านจาก PLC
 - **pose ของ board ในกล้อง** (target→cam) จาก `detect_board_pose`
 
@@ -39,23 +39,6 @@
                                                                               ──► PLC ขยับไป pose ถัดไป
 รวบรวม N คู่ → cv2.calibrateHandEye(method=PARK) → R/t cam→gripper
 ```
-
----
-
-## ⚠️ สองกับดักที่ห้ามพลาด (เสียเวลาไปหลายวันทั้งคู่ — ดู `memory/`)
-
-1. **`CharucoBoard.matchImagePoints()` ของ OpenCV 4.7.0 เสีย** — มันคืนมุม (marker) ที่ผิด
-   และทำให้การจับคู่ obj↔img สับสน ได้ค่า reprojection error ~1400 px แม้บน board ที่เรนเดอร์
-   มาแบบ *สมบูรณ์แบบ* `board_detect.py` จึงข้ามมันไป และสร้างคู่ความสัมพันธ์โดยตรงจาก
-   `getChessboardCorners()[ids]` ทำให้ reproj ลดเหลือ ~0.16 px **อย่าย้อนกลับการแก้นี้**
-   (`memory/opencv-470-matchimagepoints-bug.md`)
-
-2. **ใช้ `PARK` ไม่ใช่ `TSAI`** pose ที่เก็บมีการหมุนระหว่าง pose ที่มาก (148°/173°/…) ซึ่ง
-   solver การหมุนของ TSAI เปราะบางเชิงตัวเลข — ให้ residual 351–560 mm ขณะที่ PARK ให้ 29 mm
-   บน *ข้อมูลดี ๆ ชุดเดียวกัน* `aruco_calibate.py` รันทั้ง 5 วิธีเพื่อเปรียบเทียบ แต่เก็บ
-   `solved["PARK"]` (`memory/hand-eye-use-park-not-tsai.md`)
-
----
 
 ## Handshake 4 เฟส กับ PLC
 

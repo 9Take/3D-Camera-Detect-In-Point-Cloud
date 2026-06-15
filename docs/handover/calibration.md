@@ -28,7 +28,7 @@ pose to get the full `H_cam2base` 4×4 matrix.
 ## The method in one picture
 
 We show a **ChArUco board** (a chessboard with ArUco markers) fixed in the world. We move
-the robot to ~16 different poses. At each pose we record two things:
+the robot to ~16-20 different poses. At each pose we record two things:
 - the **robot pose** (gripper→base), read from the PLC,
 - the **board pose in the camera** (target→cam), from `detect_board_pose`.
 
@@ -41,23 +41,6 @@ For each of N poses:
                                                                               ──► PLC moves to next
 Collect N pairs → cv2.calibrateHandEye(method=PARK) → R/t cam→gripper
 ```
-
----
-
-## ⚠️ Two non-negotiable gotchas (both cost days — see `memory/`)
-
-1. **OpenCV 4.7.0 `CharucoBoard.matchImagePoints()` is broken** — it returns the wrong
-   (marker) corners and scrambles the obj↔img pairing, giving ~1400 px reprojection error
-   even on a *perfect* rendered board. `board_detect.py` bypasses it and builds
-   correspondences directly from `getChessboardCorners()[ids]`, dropping reproj to ~0.16 px.
-   **Do not revert this.** (`memory/opencv-470-matchimagepoints-bug.md`)
-
-2. **Use `PARK`, not `TSAI`.** Our poses have large inter-pose rotations (148°/173°/…),
-   where TSAI's rotation solver is fragile — it gave 351–560 mm residual where PARK gave
-   29 mm on the *same good data*. `aruco_calibate.py` runs all 5 methods for comparison but
-   keeps `solved["PARK"]`. (`memory/hand-eye-use-park-not-tsai.md`)
-
----
 
 ## The 4-phase PLC handshake
 
