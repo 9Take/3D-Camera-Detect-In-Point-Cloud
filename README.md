@@ -1,27 +1,109 @@
-# 🤖 Project 3D Guidance Robot: Computer Vision-to-PLC System
-**Project Name:** 3D-Camera-Detect-In-Point-Cloud (Vision-in-a-Box)
-**Last Updated:** 2024-05-24 (Update V1.1)
-**Hardware:** Intel RealSense D435i, KUKA/Industrial Robot, Mitsubishi PLC (MC Protocol Type3E)
+# 👋 Heat Exchanger 3D Vision System
 
-## 📌 1. Project Overview
-ระบบ Vision สำหรับตรวจหาตำแหน่งจุด โดยใช้กล้อง 3D ระบุพิกัด 6-DOF (X, Y, Z, Roll, Pitch, Yaw) ส่งข้อมูลแบบหลายจุด (สูงสุด 5 ชุด) ไปยัง PLC ผ่าน Protocolสื่อสารแบบ Binary (MC Protocol) เพื่อควบคุมแขนกล
+> This README explains how the whole system works, broken down by area, so a new
+> engineer can keep developing it. Read this page first, then jump to the area you need.
 
-## 📂 2. Project Structure
-```text
-project_root/
-├── main.py                   # ลูปหลัก: จัดการ Multi-point Logic, JSON Save, และ PLC Handshake
-├── config.yaml               # โครงสร้างใหม่ (Heartbeat D1000, Trigger M1000, Data D1001++)
-├── requirements.txt
-├── core/ 
-│       ├── detector.py       # SIFT Matching & Confidence Score
-│       └── transformer.py    # [Update] คำนวณ 6-DOF โดยคืนค่า Orientation เป็น Radian
-├── communication/ 
-│        ├── realsense.py     # RealSense Wrapper
-│        └── plc_comm.py      # PLC Communicator (Handle 16-bit Integer Scaling)
-└── data/ 
-        ├── logs/                 
-        |    ├──  position_mem.json # [Update] บันทึก Snapshot ทุกเป้าหมายที่พบก่อนส่ง PLC
-        |    └──  current_detect.json 
-        └── templates/
+---
+
+## What this system does (in one paragraph)
+
+A PLC tells us "scan now, using model/program number N". We grab an RGB-D frame from an
+Intel RealSense camera, find pre-taught features (templates) in the color image with
+SIFT matching, look up the depth at each found point, lift it to a 3D position + surface
+orientation, transform that from the **camera frame** into the **robot base frame** using
+the hand-eye calibration, and write the resulting 6-DOF poses (X, Y, Z, A, B, C) back to
+PLC registers so the robot arm can go there. Communication with the PLC is Mitsubishi
+**MC Protocol (Type3E binary)** over TCP.
 
 ```
+PLC ──"scan, program N"──►  PC (this code)  ──X,Y,Z,A,B,C per point──►  PLC ──► Robot
+ ▲                              │
+ └──── status/heartbeat ───  RealSense D435i (RGB + Depth)
+```
+
+---
+
+## The handover docs (read in this order)
+
+| # | Doc | What's inside |
+|---|-----|---------------|
+| 1 | [getting-started.md](docs/handover/getting-started.md) | Install, run, Docker, debug keyboard controls, how to research the code |
+| 2 | [core.md](docs/handover/core.md) | The vision brain: `core/detector.py` (2D find) + `core/transformer.py` (2D→3D pose) |
+| 3 | [communication.md](docs/handover/communication.md) | `communication/realsense.py` (camera) + `communication/plc_comm.py` (PLC I/O) + register map |
+| 4 | [calibration.md](docs/handover/calibration.md) | Hand-eye calibration: why, how to run `calibration/aruco_calibate.py`, how to verify |
+| 5 | [tools.md](docs/handover/tools.md) | Helper scripts: making templates, decoding PLC words, board detect, geometry, offline solver |
+| 6 | [configuration.md](docs/handover/configuration.md) | Every key in `config.yaml` explained |
+| 7 | [main-loop.md](docs/handover/main-loop.md) | How `main.py` ties everything together, one trigger cycle step by step |
+
+There is also a deeper, code-line-referenced write-up in
+[docs/methodology.md](docs/methodology.md) — use it when you need exact line numbers.
+
+---
+
+## Project map (where things live)
+
+```
+3D-Camera-Detect-In-Point-Cloud/
+├── main.py                 ← runtime entry point. THIS is what runs in production.
+├── main3.py                ← LEGACY older version. Do not use; kept for reference only.
+├── config.yaml             ← all settings (camera, PLC registers, programs, calibration)
+├── requirements.txt        ← Python deps (Python 3.8)
+├── Dockerfile / docker-compose.yml
+│
+├── core/
+│   ├── detector.py         ← SIFT template matching → 2D pixel + confidence
+│   └── transformer.py      ← pixel + depth → 3D point + 6-DOF orientation
+│
+├── communication/
+│   ├── realsense.py        ← RealSense camera wrapper (aligned RGB-D, depth filters)
+│   └── plc_comm.py         ← MC-protocol read/write, reconnect, heartbeat, slot writes
+│
+├── calibration/
+│   ├── aruco_calibate.py   ← hand-eye calibration capture + solve (run occasionally)
+│   ├── hand_eye_result.npz ← saved calibration result + raw poses
+│   └── capture_log.csv     ← raw per-pose log (for offline debugging)
+│
+├── tools/
+│   ├── create_template.py  ← teach a new template (point-and-click on camera feed)
+│   ├── plc_decode.py       ← encode/decode int32 ↔ PLC words (pure logic, testable)
+│   ├── board_detect.py     ← ChArUco board pose (used by calibration)
+│   ├── geometry.py         ← KUKA angle ↔ matrix maths (pure numpy)
+│   └── cal_ressult_calib.py← offline brute-force solver to debug a bad calibration
+│
+├── data/
+│   ├── templates/          ← taught templates, organized ProgramX/PointY/*.png + meta.json
+│   └── logs/               ← position_mem.json (last scan), current_detect.json
+│
+├── docs/                   ← methodology.md (deep reference) + handover/ (per-area guides)
+└── memory/                 ← notes on two hard-won bugs (READ THESE, see below)
+```
+
+---
+
+## ⚠️ Two bugs that cost days — read before touching calibration
+
+These are in [memory/](memory/) and are repeated in [calibration.md](docs/handover/calibration.md):
+
+1. **OpenCV 4.7.0 `CharucoBoard.matchImagePoints()` is broken.** It scrambles the
+   point pairing and gives garbage board poses (~1400 px reprojection error). We bypass
+   it and build correspondences from `getChessboardCorners()`. Don't "fix" it back.
+
+2. **Use `PARK`, not `TSAI`, for hand-eye solving.** Our capture poses have large
+   rotations between them, where TSAI's solver is numerically fragile (gave 351 mm error
+   vs PARK's 29 mm on the *same* good data). The solver was the problem, not the data.
+
+---
+
+## How to research this project when you're stuck
+
+1. **Start at the data flow**, not a file. Read [main-loop.md](docs/handover/main-loop.md) — it walks
+   one trigger from PLC bit to PLC result. Every other module hangs off that.
+2. **Run it in `--debug` mode without a robot.** You can drive triggers from the keyboard
+   and watch the live window + 3D viewer. See [getting-started.md](docs/handover/getting-started.md).
+3. **The PLC side is just registers.** The whole contract with the PLC is the
+   `plc:` section of `config.yaml`. If something is "not talking to the PLC", that table
+   is the first thing to check — see [communication.md](docs/handover/communication.md).
+4. **Use the logs.** `data/logs/position_mem.json` is the last scan's full result.
+   `calibration/capture_log.csv` is every calibration pose. Both are made for offline
+   debugging.
+5. **The `memory/` folder** records non-obvious gotchas discovered the hard way.
