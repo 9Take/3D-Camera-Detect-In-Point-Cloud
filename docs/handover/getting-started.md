@@ -105,16 +105,3 @@ It runs `python3 main.py`, uses `network_mode: host` (so it can reach the PLC),
 so your templates/config are live-editable without rebuilding.
 
 ---
-
-## How to develop safely
-
-This project ships a [`CLAUDE.md`](../../CLAUDE.md) with house rules. The short version:
-- **Surgical changes** — touch only what the task needs; match the existing style.
-- **Simplicity first** — minimum code that solves the problem.
-- **Verify with a goal** — e.g. "run a trigger, confirm slot values in `position_mem.json`".
-
-Good first things to try:
-1. `python main.py --debug`, press `1` then `t`, watch a scan run end-to-end (PLC writes
-   will just fail quietly if no PLC — that's fine for seeing the vision path).
-2. Open `data/logs/position_mem.json` after a scan to see the exact result that was sent.
-3. Read [main-loop.md](main-loop.md) alongside `main.py` with both open.
