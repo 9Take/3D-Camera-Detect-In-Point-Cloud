@@ -42,6 +42,10 @@ plc:
 
   # PLC -> PC (live robot pose feedback; KUKA writes its current pose here,
   # same registers/format the ArUco hand-eye calibration reads)
+  use_live_scan_pose: false   # true  = read the robot pose live from the PLC on every
+                              #         trigger and rebuild Cam->BASE from it
+                              # false = ignore the PLC pose, always use the manual
+                              #         robot.scan_pose from this config
   pose_device:     D2000   # WORD - start of 6 int32 (X Y Z A B C), mm/deg x1000
   pose_word_count: 12      # 6 double-words * 2 words each
   pose_word_swap:  false   # true if KUKA REALs come back high-word-first
@@ -107,7 +111,7 @@ robot:
     x:  0.530   # m  (530.0 mm)
     y:  0.015   # m  ( 15.0 mm)
     z:  0.090   # m  ( 90.0 mm)
-    a: -90.0    # deg about Z (A)
+    a: -135.0    # deg about Z (A)
     b:  0.0     # deg about Y (B)
     c: -180.0   # deg about X (C)
 
@@ -116,9 +120,9 @@ robot:
   # (X right, Y down, Z forward into the scene), meters. Added to each detected
   # target point so the reported X/Y/Z lands at the stick tip (orientation unchanged).
   ee_offset:
-    x: 0.0   # m
+    x: 0.005   # m
     y: 0.0   # m
-    z: -0.295  # m
+    z: -0.305  # m
 
 paths:
   debug_dir:    data/templates/debug

@@ -451,18 +451,21 @@ def main():
             prog_name, detector = detectors[program_no]
             print(f"[RUN] Using program '{prog_name}'")
 
-            # Robot is parked at the photo pose now — read it live from the PLC and
-            # rebuild Cam->BASE. Fall back to the last/config pose if unavailable.
-            scan_pose = read_robot_scan_pose(plc, plc_cfg)
-            if scan_pose is not None:
-                H_CAM2BASE = build_cam2base(config['robot'], scan_pose)
-                print(f"[POSE] Scan pose from PLC: "
-                      f"X={scan_pose['x']*1000:.1f} Y={scan_pose['y']*1000:.1f} "
-                      f"Z={scan_pose['z']*1000:.1f} mm  "
-                      f"A={scan_pose['a']:.1f} B={scan_pose['b']:.1f} C={scan_pose['c']:.1f} deg")
-            else:
-                print("[POSE WARN] No robot pose from PLC (all-zero/read fail) — "
-                      "using config scan_pose.")
+            # Robot is parked at the photo pose now. When use_live_scan_pose is on,
+            # read it live from the PLC and rebuild Cam->BASE; otherwise keep the
+            # manual config scan_pose set at startup. A live read that fails / returns
+            # all-zero also falls back to the config pose.
+            if plc_cfg.get('use_live_scan_pose', False):
+                scan_pose = read_robot_scan_pose(plc, plc_cfg)
+                if scan_pose is not None:
+                    H_CAM2BASE = build_cam2base(config['robot'], scan_pose)
+                    print(f"[POSE] Scan pose from PLC: "
+                          f"X={scan_pose['x']*1000:.1f} Y={scan_pose['y']*1000:.1f} "
+                          f"Z={scan_pose['z']*1000:.1f} mm  "
+                          f"A={scan_pose['a']:.1f} B={scan_pose['b']:.1f} C={scan_pose['c']:.1f} deg")
+                else:
+                    print("[POSE WARN] No robot pose from PLC (all-zero/read fail) — "
+                          "using config scan_pose.")
 
             # ---- Capture the scan frame ----
             ret, _, color_raw = cam.get_raw_frame()
