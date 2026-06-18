@@ -111,10 +111,10 @@ robot:
     x:  0.530   # m  (530.0 mm)
     y:  0.015   # m  ( 15.0 mm)
     z:  0.090   # m  ( 90.0 mm)
-    a: -135.0    # deg about Z (A)
+    a: -90.0    # deg about Z (A)
     b:  0.0     # deg about Y (B)
     c: -180.0   # deg about X (C)
-
+  #######################################
 
   # Stick end-effector tip offset from the camera, measured in the CAMERA frame
   # (X right, Y down, Z forward into the scene), meters. Added to each detected
