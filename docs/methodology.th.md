@@ -162,13 +162,17 @@ H_cam2base = H_gripper2base @ H_cam2gripper
   ([main.py:27-33](../main.py#L27-L33)) ซึ่งใช้ convention **intrinsic Z-Y-X** ของ KUKA
   (`Rz(A)·Ry(B)·Rx(C)`)
 
-### 6.2 pose ถ่ายภาพสดจาก PLC
+### 6.2 pose ถ่ายภาพ: ตั้งมือใน config หรืออ่านสดจาก PLC
 
-pose ถ่ายภาพถูก **อ่านสดจาก PLC ทุก trigger**
-(`read_robot_scan_pose`, [main.py:51-59](../main.py#L51-L59)) จาก `pose_device`
-(`D2000`, int32 หกตัว ×1000, mm/deg) แล้วสร้าง `H_cam2base` ใหม่ ส่วน `robot.scan_pose`
-แบบคงที่ใน config เป็นเพียง **fallback** ที่ใช้ตอนเริ่มหรือถ้าการอ่าน PLC fail / คืนเป็นศูนย์
-ทั้งหมด — ตั้งค่าให้เป็น pose ที่จอดจริง เพื่อให้การอ่านที่ fail ไม่ส่งหุ่นยนต์ไปผิดที่
+แหล่งที่มาของ pose ถ่ายภาพเลือกด้วย `plc.use_live_scan_pose`:
+
+- **`false` (ค่าเริ่มต้น)** — สร้าง `H_cam2base` ครั้งเดียวตอนเริ่มจาก `robot.scan_pose`
+  ที่ตั้งมือใน config แล้วใช้ซ้ำทุก trigger โดยไม่สนใจ pose จาก PLC
+- **`true`** — pose ถ่ายภาพถูก **อ่านสดจาก PLC ทุก trigger**
+  (`read_robot_scan_pose`, [main.py:51-59](../main.py#L51-L59)) จาก `pose_device`
+  (`D2000`, int32 หกตัว ×1000, mm/deg) แล้วสร้าง `H_cam2base` ใหม่ กรณีนี้
+  `robot.scan_pose` เป็นค่าเริ่มต้นตอนสตาร์ตและเป็น **fallback** ถ้าการอ่าน PLC fail /
+  คืนเป็นศูนย์ทั้งหมด — ตั้งค่าให้เป็น pose ที่จอดจริง เพื่อให้การอ่านที่ fail ไม่ส่งหุ่นยนต์ไปผิดที่
 
 ### 6.3 การเข้ารหัสต่อเป้าหมาย
 
@@ -201,10 +205,10 @@ reconnect ที่จำกัดอัตรา (cooldown 2 วินาที
 ```
 PLC                                  PC
  ─ write D1100 = program_no   ──►  poll (D1100)        sticky
- ─ write D2000 = pose หุ่นยนต์  ──►  (อ่านตอน trigger)
+ ─ write D2000 = pose หุ่นยนต์  ──►  (อ่านตอน trigger ถ้า use_live_scan_pose)
  ─ set  M1500 = 1 (trigger)   ──►  read  (M1500)
                                    set status: ready=0, busy=1
-                                   อ่าน pose สด (D2000), สร้าง Cam→Base ใหม่
+                                   (ถ้าโหมดสด) อ่าน pose (D2000), สร้าง Cam→Base ใหม่
                                    จับเฟรม, ตรวจจับ, ยกเป็น 3D, แปลง
                                    write D1002 = amount
                                    write D1003.. = X,Y,Z,A,B,C,Conf ต่อ slot
@@ -281,8 +285,8 @@ thread เบื้องหลังเพิ่ม counter และเขี�
 3. เรนเดอร์พรีวิวสดพร้อมการตรวจจับของโปรแกรมที่ใช้งาน (กรอบ + จุดเป้าหมาย + ป้ายต่อจุด *best*)
 4. เมื่อ trigger:
    - ล็อก `current_program_no`, ตั้ง `busy=1`
-   - **อ่าน pose ถ่ายภาพสดจาก PLC** และสร้าง `H_cam2base` ใหม่ (§6.2); fallback ไปใช้ pose
-     จาก config ถ้าใช้ไม่ได้
+   - ถ้าเปิด `use_live_scan_pose`: **อ่าน pose ถ่ายภาพสดจาก PLC** และสร้าง `H_cam2base`
+     ใหม่ (§6.2) fallback ไปใช้ pose จาก config ถ้าใช้ไม่ได้ มิฉะนั้นใช้ `H_cam2base` จาก config
    - จับเฟรมใหม่สำหรับการสแกนจริง (เฟรมนิ่งน่าเชื่อถือกว่าเฟรมพรีวิวที่ใช้แสดงผล)
    - รัน detector → กรอง best-per-point → ยก 3D
    - แสดง grid "trigger result" หนึ่ง tile ต่อ sub-template โดย tile BEST ตีกรอบเขียว
@@ -321,7 +325,7 @@ thread เบื้องหลังเพิ่ม counter และเขี�
 ## 10. เส้นทางข้อมูลแบบครบวงจร (หนึ่ง trigger)
 
 ```
-PLC trigger  ─►  อ่าน pose ถ่ายภาพหุ่นยนต์สด (D2000) → สร้าง H_cam2base ใหม่
+PLC trigger  ─►  (ถ้า use_live_scan_pose) อ่าน pose ถ่ายภาพหุ่นยนต์ (D2000) → สร้าง H_cam2base ใหม่
               ─►  เฟรม RGB+Depth  ─►  จับคู่ SIFT/FLANN กับ template ของ ProgramN
               ─►  RANSAC homography → พิกเซลเป้าหมาย (u,v) + confidence
               ─►  กรอง best-per-point

@@ -176,14 +176,18 @@ H_cam2base = H_gripper2base @ H_cam2gripper
   ([main.py:27-33](../main.py#L27-L33)), which uses the KUKA **intrinsic Z-Y-X**
   convention (`Rz(A)·Ry(B)·Rx(C)`).
 
-### 6.2 Live photo pose from the PLC
+### 6.2 Photo pose: manual config vs. live from the PLC
 
-The photo pose is **read live from the PLC on every trigger**
-(`read_robot_scan_pose`, [main.py:51-59](../main.py#L51-L59)) from `pose_device`
-(`D2000`, six int32 ×1000, mm/deg), and `H_cam2base` is rebuilt. The static
-`robot.scan_pose` in config is only a **fallback** used at startup or if the PLC
-read fails / returns all-zero — set it to the true parked pose so a failed read
-never sends the robot to the wrong place.
+The source of the photo pose is selected by `plc.use_live_scan_pose`:
+
+- **`false` (default)** — `H_cam2base` is built once at startup from the manual
+  `robot.scan_pose` in config and reused for every trigger; the PLC pose is ignored.
+- **`true`** — the photo pose is **read live from the PLC on every trigger**
+  (`read_robot_scan_pose`, [main.py:51-59](../main.py#L51-L59)) from `pose_device`
+  (`D2000`, six int32 ×1000, mm/deg), and `H_cam2base` is rebuilt. Here
+  `robot.scan_pose` is the startup default and the **fallback** if the PLC read
+  fails / returns all-zero — set it to the true parked pose so a failed read never
+  sends the robot to the wrong place.
 
 ### 6.3 Per-target encoding
 
@@ -220,10 +224,10 @@ not crash the loop.
 ```
 PLC                                  PC
  ─ write D1100 = program_no   ──►  poll (D1100)        sticky
- ─ write D2000 = robot pose   ──►  (read on trigger)
+ ─ write D2000 = robot pose   ──►  (read on trigger, if use_live_scan_pose)
  ─ set  M1500 = 1 (trigger)   ──►  read  (M1500)
                                    set status: ready=0, busy=1
-                                   read live pose (D2000), rebuild Cam→Base
+                                   (if live mode) read pose (D2000), rebuild Cam→Base
                                    capture frame, detect, lift to 3D, transform
                                    write D1002 = amount
                                    write D1003.. = X,Y,Z,A,B,C,Conf per slot
@@ -305,8 +309,9 @@ Per iteration:
    target dot + label per *best* point).
 4. On trigger:
    - Lock `current_program_no`, set `busy=1`.
-   - **Read the live photo pose from the PLC** and rebuild `H_cam2base` (§6.2);
-     fall back to the config pose if unavailable.
+   - If `use_live_scan_pose` is on, **read the live photo pose from the PLC** and
+     rebuild `H_cam2base` (§6.2), falling back to the config pose if unavailable;
+     otherwise keep the config-based `H_cam2base`.
    - Re-capture a frame for the actual scan (a still frame is more reliable
      than the preview one used for visualization).
    - Run detector → best-per-point filter → 3D lift.
@@ -350,7 +355,7 @@ Adds keyboard control to operate without a PLC:
 ## 10. End-to-End Data Path (single trigger)
 
 ```
-PLC trigger  ─►  read live robot photo pose (D2000) → rebuild H_cam2base
+PLC trigger  ─►  (if use_live_scan_pose) read robot photo pose (D2000) → rebuild H_cam2base
               ─►  RGB+Depth frame  ─►  SIFT/FLANN match against ProgramN templates
               ─►  RANSAC homography → target pixel (u,v) + confidence
               ─►  best-per-point filter

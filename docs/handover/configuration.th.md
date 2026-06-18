@@ -71,6 +71,8 @@ plc:
 
   trigger_device: M1500       # PLC→PC: เริ่มสแกน
   program_no_device: D1100    # PLC→PC: โปรแกรมไหน
+  use_live_scan_pose: false   # true = อ่าน pose หุ่นยนต์สดจาก PLC ทุก trigger;
+                              # false = ใช้ค่า robot.scan_pose ที่ตั้งมือด้านล่างเสมอ
   pose_device: D2000          # PLC→PC: pose หุ่นยนต์สด (6× int32)
   pose_word_count: 12
   pose_word_swap: false       # ตั้ง true ถ้า KUKA REAL ส่งกลับมาเป็น high-word-first
@@ -111,11 +113,11 @@ robot:
   hand_eye_rotation:    [...3x3...]   # R_cam2gripper จากการคาลิเบรต (ไม่มีหน่วย)
   hand_eye_translation: [...3...]     # t_cam2gripper, เมตร (คาลิเบรตพิมพ์เป็น mm → ÷1000)
 
-  scan_pose:                          # pose ถ่ายภาพ FALLBACK (เฟรม WORLD ของ SmartPAD)
-    x: 0.530  # m                     # ใช้เฉพาะตอนเริ่ม / ถ้าอ่าน pose สดจาก PLC
-    y: 0.015  # m                     # fail หรือคืนเป็นศูนย์ทั้งหมด ตั้งค่าให้เป็น pose
-    z: 0.090  # m                     # ถ่ายภาพที่จอดจริง เพื่อให้การอ่านที่ fail ไม่ส่ง
-    a: -90.0  # deg                   # หุ่นยนต์ไปผิดที่
+  scan_pose:                          # pose ถ่ายภาพ (เฟรม WORLD ของ SmartPAD)
+    x: 0.530  # m                     # ใช้ค่านี้ตรง ๆ เมื่อ use_live_scan_pose = false
+    y: 0.015  # m                     # เมื่อเปิดโหมดสด ค่านี้เป็นค่าเริ่มต้นตอนสตาร์ต และ
+    z: 0.090  # m                     # เป็น fallback ถ้าอ่าน pose จาก PLC fail / เป็นศูนย์
+    a: -90.0  # deg                   # ตั้งค่าให้เป็น pose ถ่ายภาพที่จอดจริง
     b: 0.0
     c: -180.0
 
@@ -126,8 +128,11 @@ robot:
 ```
 - **`hand_eye_*`** — ได้จากการรันคาลิเบรต เป็นการส่งต่อด้วยมือเพียงจุดเดียว ดู
   [calibration.th.md](calibration.th.md)
-- **`scan_pose`** — fallback เท่านั้น ตอนรันจริง `main.py` อ่าน pose *สด* จาก PLC
-  (`pose_device`) ทุก trigger ค่านี้ใช้ตอนเริ่มและถ้าการอ่านนั้น fail
+- **`use_live_scan_pose`** — เลือกว่าจะเอา pose ถ่ายภาพจากไหน `false` (ค่าเริ่มต้น): ใช้
+  `scan_pose` ที่ตั้งมือด้านล่างเสมอ `true`: `main.py` อ่าน pose *สด* จาก PLC
+  (`pose_device`) ทุก trigger แล้วสร้าง Cam→BASE ใหม่จากค่านั้น
+- **`scan_pose`** — pose ถ่ายภาพที่ตั้งมือ ใช้ตรง ๆ เมื่อ `use_live_scan_pose` เป็น `false`;
+  ในโหมดสดเป็นค่าเริ่มต้นตอนสตาร์ตและเป็น fallback ถ้าอ่านจาก PLC fail / เป็นศูนย์ทั้งหมด
 - **`ee_offset`** — เลื่อนจุดที่รายงานจากศูนย์กลางออปติคัลของกล้องไปยังปลายเครื่องมือจริง
   ปรับถ้าหุ่นยนต์ไปตกแบบ offset ตามแกนใดแกนหนึ่งเสมอ ๆ
 

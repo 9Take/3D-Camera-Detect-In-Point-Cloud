@@ -17,7 +17,8 @@ the system. Everything else is a module it calls. Read this with `main.py` open 
    - connects the `PLCCommunicator` and starts the **heartbeat thread**,
    - pushes the initial PLC state: `error=ok`, `ready=1, busy=0, complete=0, error=0`.
 3. Builds the default `H_CAM2BASE` from `build_cam2base(robot_cfg, scan_pose)` — the camera→
-   base transform using the *config* scan pose (refreshed live each trigger later).
+   base transform using the *config* scan pose (refreshed live each trigger only when
+   `plc.use_live_scan_pose` is true).
 
 ---
 
@@ -42,9 +43,10 @@ When a trigger fires (PLC bit = 1, or `t` in debug) → run **one scan cycle**.
 1. set_status(ready=0, busy=1, complete=0, error=0); error_code = ok
 2. validate program_no  ── if invalid → error_code=invalid_program, error=1,
                            wait for trigger to clear, abort cycle
-3. read_robot_scan_pose(plc) from D2000  ── live robot pose
+3. (only if plc.use_live_scan_pose) read_robot_scan_pose(plc) from D2000  ── live robot pose
      └─ if valid: rebuild H_CAM2BASE from it
      └─ if all-zero/fail: keep the config-based H_CAM2BASE (with a warning)
+     └─ if use_live_scan_pose is false: skip entirely, keep config H_CAM2BASE
 4. capture a fresh scan frame  ── if camera fails → error_code=camera, abort cycle
 5. detector.detect(scan_frame)  ── all template hits
 6. best_per_point(...)          ── keep only the highest-confidence template per Point

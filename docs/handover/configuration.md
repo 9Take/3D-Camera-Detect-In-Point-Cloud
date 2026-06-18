@@ -71,6 +71,8 @@ plc:
 
   trigger_device: M1500       # PLC→PC: start scan
   program_no_device: D1100    # PLC→PC: which program
+  use_live_scan_pose: false   # true = read live robot pose from PLC every trigger;
+                              # false = always use the manual robot.scan_pose below
   pose_device: D2000          # PLC→PC: live robot pose (6× int32)
   pose_word_count: 12
   pose_word_swap: false       # set true if KUKA REALs come back high-word-first
@@ -112,11 +114,11 @@ robot:
   hand_eye_rotation:    [...3x3...]   # R_cam2gripper from calibration (unitless)
   hand_eye_translation: [...3...]     # t_cam2gripper, METERS (calib prints mm → ÷1000)
 
-  scan_pose:                          # FALLBACK photo pose (SmartPAD WORLD frame)
-    x: 0.530  # m                     # only used at startup / if the live PLC pose
-    y: 0.015  # m                     # read fails or returns all-zero. Set it to the
-    z: 0.090  # m                     # real parked photo pose so a failed read doesn't
-    a: -90.0  # deg                   # send the robot somewhere wrong.
+  scan_pose:                          # photo pose (SmartPAD WORLD frame)
+    x: 0.530  # m                     # used as-is when use_live_scan_pose is false.
+    y: 0.015  # m                     # When live mode is on it is the startup default
+    z: 0.090  # m                     # and the fallback if the PLC read fails / is
+    a: -90.0  # deg                   # all-zero. Set it to the real parked photo pose.
     b: 0.0
     c: -180.0
 
@@ -128,8 +130,11 @@ robot:
 ```
 - **`hand_eye_*`** — from running the calibration; the only manual handoff. See
   [calibration.md](calibration.md).
-- **`scan_pose`** — fallback only. At runtime `main.py` reads the *live* pose from the PLC
-  (`pose_device`) on every trigger; this is used at startup and if that read fails.
+- **`use_live_scan_pose`** — selects where the photo pose comes from. `false` (default):
+  always use the manual `scan_pose` below. `true`: `main.py` reads the *live* pose from the
+  PLC (`pose_device`) on every trigger and rebuilds Cam→BASE from it.
+- **`scan_pose`** — the manual photo pose. Used as-is when `use_live_scan_pose` is `false`;
+  in live mode it is the startup default and the fallback if the PLC read fails / is all-zero.
 - **`ee_offset`** — shifts the reported point from the camera optical center to the actual
   tool tip. Adjust if the robot consistently lands offset along one axis.
 

@@ -78,7 +78,7 @@ Everything the PLC and PC agree on lives in the `plc:` block of `config.yaml`. T
 |--------|------|---------|
 | `M1500` `trigger_device` | bit | PLC raises = "scan now" |
 | `D1100` `program_no_device` | word | which program/model to run |
-| `D2000` `pose_device` (12 words) | 6×int32 | **live robot pose** X Y Z A B C (mm/deg ×1000); read every trigger |
+| `D2000` `pose_device` (12 words) | 6×int32 | **live robot pose** X Y Z A B C (mm/deg ×1000); read every trigger only when `use_live_scan_pose` is true |
 
 ### PC → PLC (status outputs)
 | Device | Type | Meaning |
@@ -149,7 +149,7 @@ PLC                                   PC (main.py)
  write D1100 = program_no   ──►  polls D1100 (sticky: remembers last valid)
  set   M1500 = 1 (trigger)  ──►  reads M1500
                                  status: ready=0, busy=1
-                                 read live pose from D2000, rebuild Cam→Base
+                                 (if use_live_scan_pose) read pose from D2000, rebuild Cam→Base
                                  capture frame, detect, lift to 3D, transform
                                  write D1002 = amount
                                  write D1003.. = slots (14 words each)

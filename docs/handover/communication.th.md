@@ -78,7 +78,7 @@
 |---------|------|----------|
 | `M1500` `trigger_device` | bit | PLC ยกขึ้น = "สแกนเดี๋ยวนี้" |
 | `D1100` `program_no_device` | word | จะรันโปรแกรม/โมเดลไหน |
-| `D2000` `pose_device` (12 words) | 6×int32 | **pose หุ่นยนต์สด** X Y Z A B C (mm/deg ×1000) อ่านทุก trigger |
+| `D2000` `pose_device` (12 words) | 6×int32 | **pose หุ่นยนต์สด** X Y Z A B C (mm/deg ×1000) อ่านทุก trigger เฉพาะเมื่อ `use_live_scan_pose` เป็น true |
 
 ### PC → PLC (สถานะขาออก)
 | อุปกรณ์ | ชนิด | ความหมาย |
@@ -148,7 +148,7 @@ PLC                                   PC (main.py)
  write D1100 = program_no   ──►  poll D1100 (sticky: จำค่าที่ใช้ได้ล่าสุด)
  set   M1500 = 1 (trigger)  ──►  read M1500
                                  status: ready=0, busy=1
-                                 อ่าน pose สดจาก D2000, สร้าง Cam→Base ใหม่
+                                 (ถ้า use_live_scan_pose) อ่าน pose จาก D2000, สร้าง Cam→Base ใหม่
                                  จับเฟรม, ตรวจจับ, ยกเป็น 3D, แปลง
                                  write D1002 = amount
                                  write D1003.. = slot (14 words ต่อ slot)

@@ -17,7 +17,8 @@
    - เชื่อมต่อ `PLCCommunicator` และเริ่ม **thread heartbeat**
    - ส่งสถานะ PLC เริ่มต้น: `error=ok`, `ready=1, busy=0, complete=0, error=0`
 3. สร้าง `H_CAM2BASE` เริ่มต้นจาก `build_cam2base(robot_cfg, scan_pose)` — การแปลง camera→base
-   โดยใช้ scan pose จาก *config* (จะ refresh สดทุก trigger ทีหลัง)
+   โดยใช้ scan pose จาก *config* (จะ refresh สดทุก trigger ทีหลังเฉพาะเมื่อ
+   `plc.use_live_scan_pose` เป็น true)
 
 ---
 
@@ -42,9 +43,10 @@ render_live_view()  ── หน้าต่าง live: การตรวจ�
 1. set_status(ready=0, busy=1, complete=0, error=0); error_code = ok
 2. ตรวจสอบ program_no  ── ถ้าไม่ถูกต้อง → error_code=invalid_program, error=1,
                           รอ trigger เคลียร์, ยกเลิกรอบ
-3. read_robot_scan_pose(plc) จาก D2000  ── pose หุ่นยนต์สด
+3. (เฉพาะเมื่อ plc.use_live_scan_pose) read_robot_scan_pose(plc) จาก D2000  ── pose หุ่นยนต์สด
      └─ ถ้าใช้ได้: สร้าง H_CAM2BASE ใหม่จากมัน
      └─ ถ้าศูนย์ทั้งหมด/fail: ใช้ H_CAM2BASE จาก config (พร้อมเตือน)
+     └─ ถ้า use_live_scan_pose เป็น false: ข้ามทั้งหมด ใช้ H_CAM2BASE จาก config
 4. จับเฟรมสแกนใหม่  ── ถ้ากล้อง fail → error_code=camera, ยกเลิกรอบ
 5. detector.detect(scan_frame)  ── template ทั้งหมดที่เจอ
 6. best_per_point(...)          ── เก็บเฉพาะ template ที่ confidence สูงสุดต่อจุด
